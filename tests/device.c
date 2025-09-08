@@ -78,6 +78,31 @@ static btest_suite_t device = {
 	.cleanup_per_test = cleanup_per_test,
 };
 
+BTEST(device, dei) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"|d0 @Test &deo $2 &dei $2 |0100 .Test/dei DEI"
+	));
+	fixture.dei = 0xbeef;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xbe);
+}
+
+BTEST(device, deo) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"|d0 @Test &deo $2 &dei $2 |0100 #cafe .Test/deo DEO"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%04x", fixture.deo, 0xfe00);
+}
+
 BTEST(device, dei2) {
 	BTEST_ASSERT(buxn_asm_str(
 		&fixture.arena,
