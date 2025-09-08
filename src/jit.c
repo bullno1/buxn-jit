@@ -944,6 +944,7 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
 	struct sljit_compiler* compiler = sljit_create_compiler(NULL);
+	/*sljit_compiler_verbose(compiler, stderr);*/
 	sljit_emit_enter(
 		compiler,
 		0,
@@ -981,14 +982,14 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
 
 			sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_R(BUXN_JIT_R_SWSP), 0, SLJIT_R(BUXN_JIT_R_WSP), 0);
 			sljit_emit_op1(compiler, SLJIT_MOV_U8, SLJIT_R(BUXN_JIT_R_SRSP), 0, SLJIT_R(BUXN_JIT_R_RSP), 0);
-			ctx.wsp_reg = BUXN_JIT_R_SWSP;
-			ctx.rsp_reg = BUXN_JIT_R_SRSP;
+			ctx.wsp_reg = SLJIT_R(BUXN_JIT_R_SWSP);
+			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_SRSP);
 		} else {
 			ctx.ewsp = &ctx.wsp;
 			ctx.ersp = &ctx.rsp;
 
-			ctx.wsp_reg = BUXN_JIT_R_WSP;
-			ctx.rsp_reg = BUXN_JIT_R_RSP;
+			ctx.wsp_reg = SLJIT_R(BUXN_JIT_R_WSP);
+			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_RSP);
 		}
 
 		switch (ctx.current_opcode) {

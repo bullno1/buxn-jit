@@ -55,3 +55,41 @@ static btest_suite_t basic = {
 BTEST(basic, empty) {
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 }
+
+BTEST(basic, arithmetic) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x18; // ADD
+	fixture.vm->ws[0] = 1;
+	fixture.vm->ws[1] = 2;
+	fixture.vm->wsp = 2;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 3);
+}
+
+BTEST(basic, arithmetic_short) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x38; // ADD2
+	fixture.vm->ws[0] = 0;
+	fixture.vm->ws[1] = 255;
+	fixture.vm->ws[2] = 0;
+	fixture.vm->ws[3] = 1;
+	fixture.vm->wsp = 4;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 0);
+}
+
+BTEST(basic, arithmetic_keep) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x98; // ADDk
+	fixture.vm->ws[0] = 1;
+	fixture.vm->ws[1] = 2;
+	fixture.vm->wsp = 2;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 3);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 2);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[2], 3);
+}
