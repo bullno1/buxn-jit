@@ -1,0 +1,5 @@
+#!/bin/bash -e
+
+BUILD_TYPE=${BUILD_TYPE:-Debug}
+
+bin/$BUILD_TYPE/buxn-jit-tests $@

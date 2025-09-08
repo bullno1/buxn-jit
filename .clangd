@@ -1,0 +1,12 @@
+---
+CompileFlags:
+  Add:
+    - -xc
+    - -Wall
+    - -Werror
+    - -pedantic
+    - -std=c11
+    - -Iinclude
+    - -Ideps/buxn/include
+    - -Ideps/sljit/sljit_src
+    - -Ideps/blibs

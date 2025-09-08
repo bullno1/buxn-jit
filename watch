@@ -1,0 +1,18 @@
+#!/bin/sh -e
+
+export BUILD_TYPE=${1:-Debug}
+
+if ./build $@
+then
+	./test ${TEST:-} || true
+fi
+
+inotifywait -r -e CLOSE_WRITE -m build src tests | \
+	while read path action file
+	do
+		clear
+		if ./build $@
+		then
+			./test ${TEST:-} || true
+		fi
+	done

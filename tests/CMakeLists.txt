@@ -1,0 +1,10 @@
+set(BUXN_JIT_TEST_SOURCES
+	"main.c"
+)
+
+add_executable(buxn-jit-tests ${BUXN_JIT_TEST_SOURCES})
+target_link_libraries(buxn-jit-tests PRIVATE
+	buxn-jit
+	buxn-vm
+	blibs
+)
