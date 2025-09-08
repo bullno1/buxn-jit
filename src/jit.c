@@ -304,10 +304,10 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 static void
 buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
-	uint8_t* stack_ptr = flag_r ? ctx->ersp : ctx->ewsp;
+	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
 
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
-	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
+	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_R(BUXN_JIT_R_RSP) : SLJIT_R(BUXN_JIT_R_WSP);
 
 	if (operand.is_short) {
 		buxn_jit_value_t* hi = &stack[(*stack_ptr)++];
