@@ -59,7 +59,7 @@ BTEST(memory, lit) {
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x42);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x42);
 }
 
 BTEST(memory, lit2) {
@@ -69,8 +69,8 @@ BTEST(memory, lit2) {
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x42);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 0x69);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x42);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0x69);
 }
 
 BTEST(memory, ldz) {
@@ -84,8 +84,8 @@ BTEST(memory, ldz) {
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0xab);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 0xcd);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xab);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0xcd);
 }
 
 BTEST(memory, stz) {
@@ -97,6 +97,58 @@ BTEST(memory, stz) {
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->memory[0x00], 0xcd);
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->memory[0xff], 0xab);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x00], 0xcd);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0xff], 0xab);
+}
+
+BTEST(memory, ldr) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		",cell LDR2 BRK @cell abcd"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xab);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0xcd);
+}
+
+BTEST(memory, str) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#1234 ,cell STR2 BRK |f0 @cell $2"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0xf0], 0x12);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0xf1], 0x34);
+}
+
+BTEST(memory, lda) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		";cell LDA2 BRK @cell abcd"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xab);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0xcd);
+}
+
+BTEST(memory, sta) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#abcd ;cell STA2 BRK |0800 @cell $1"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0800], 0xab);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0801], 0xcd);
 }
