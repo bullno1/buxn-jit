@@ -153,3 +153,14 @@ BTEST(basic, cmp) {
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
 }
+
+BTEST(basic, sft) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x1f; // SFT
+	fixture.vm->ws[0] = 0x34;
+	fixture.vm->ws[1] = 0x33;
+	fixture.vm->wsp = 2;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 0x30);
+}
