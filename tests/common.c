@@ -28,11 +28,20 @@ struct buxn_asm_ctx_s {
 
 void
 buxn_vm_deo(buxn_vm_t* vm, uint8_t address) {
+	device_handler_t* handler = vm->config.userdata;
+	if (handler != NULL) {
+		handler->deo(vm, address, handler->userdata);
+	}
 }
 
 uint8_t
 buxn_vm_dei(buxn_vm_t* vm, uint8_t address) {
-	return vm->device[address];
+	device_handler_t* handler = vm->config.userdata;
+	if (handler != NULL) {
+		return handler->dei(vm, address, handler->userdata);
+	} else {
+		return vm->device[address];
+	}
 }
 
 void*

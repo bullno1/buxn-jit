@@ -5,6 +5,13 @@
 #include <stdint.h>
 
 struct barena_s;
+struct buxn_vm_s;
+
+typedef struct {
+	uint8_t (*dei)(struct buxn_vm_s* vm, uint8_t addr, void* userdata);
+	void (*deo)(struct buxn_vm_s* vm, uint8_t addr, void* userdata);
+	void* userdata;
+} device_handler_t;
 
 bool
 buxn_asm_str(
