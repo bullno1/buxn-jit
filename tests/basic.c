@@ -93,3 +93,14 @@ BTEST(basic, arithmetic_keep) {
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 2);
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[2], 3);
 }
+
+BTEST(basic, arithmetic_return) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x58; // ADDr
+	fixture.vm->rs[0] = 1;
+	fixture.vm->rs[1] = 2;
+	fixture.vm->rsp = 2;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->rsp, 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->rs[0], 3);
+}
