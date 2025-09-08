@@ -104,3 +104,22 @@ BTEST(basic, arithmetic_return) {
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->rsp, 1);
 	BTEST_ASSERT_EQUAL("%d", fixture.vm->rs[0], 3);
 }
+
+BTEST(basic, stack_wrap_around) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x02; // POP
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 0xff);
+}
+
+BTEST(basic, stack_wrap_around_2) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x21; // INC2
+	fixture.vm->ws[0] = 1;
+	fixture.vm->ws[255] = 2;
+	fixture.vm->wsp = 1;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 2);
+	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[255], 2);
+}
