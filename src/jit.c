@@ -507,10 +507,7 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
-		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
-			? (BUXN_JIT_SEM_CONST | BUXN_JIT_SEM_BOOLEAN)
-			: 0,
-		.const_value = a.const_value == b.const_value,
+		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
 	sljit_emit_op2u(
@@ -536,10 +533,7 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
-		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
-			? (BUXN_JIT_SEM_CONST | BUXN_JIT_SEM_BOOLEAN)
-			: 0,
-		.const_value = a.const_value != b.const_value,
+		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
 	sljit_emit_op2u(
@@ -565,10 +559,7 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
-		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
-			? (BUXN_JIT_SEM_CONST | BUXN_JIT_SEM_BOOLEAN)
-			: 0,
-		.const_value = a.const_value > b.const_value,
+		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
 	sljit_emit_op2u(
@@ -594,10 +585,7 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
-		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
-			? (BUXN_JIT_SEM_CONST | BUXN_JIT_SEM_BOOLEAN)
-			: 0,
-		.const_value = a.const_value < b.const_value,
+		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
 	sljit_emit_op2u(
@@ -937,6 +925,83 @@ buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t lit = {
+		// We will assume that it is a constant, even if it can be overwritten.
+		// Jump opcodes will recheck the assumption so it is safe.
+		.semantics = BUXN_JIT_SEM_CONST,
+		.is_short = buxn_jit_op_flag_2(ctx),
+		.reg = SLJIT_R(BUXN_JIT_R_OP_A),
+	};
+
+	if (buxn_jit_op_flag_2(ctx)) {
+		uint8_t hi = ctx->jit->vm->memory[ctx->pc];
+		uint8_t lo = ctx->jit->vm->memory[ctx->pc + 1];
+		lit.const_value = (uint16_t)hi << 8 | (uint16_t)lo;
+
+		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			SLJIT_IMM, ctx->pc
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			lit.reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SHL,
+			lit.reg, 0,
+			lit.reg, 0,
+			SLJIT_IMM, 8
+		);
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			SLJIT_IMM, ctx->pc + 1
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_OR,
+			lit.reg, 0,
+			lit.reg, 0,
+			SLJIT_R(BUXN_JIT_R_OP_T), 0
+		);
+
+		ctx->pc += 2;
+	} else {
+		lit.const_value = ctx->jit->vm->memory[ctx->pc];
+
+		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			SLJIT_IMM, ctx->pc
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			lit.reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+
+		ctx->pc += 1;
+	}
+
+	buxn_jit_push(ctx, lit);
 }
 
 // }}}
