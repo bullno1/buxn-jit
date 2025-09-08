@@ -1,5 +1,8 @@
 set(BUXN_JIT_TEST_SOURCES
 	"main.c"
+	"common.c"
+
+	"basic.c"
 )
 
 add_executable(buxn-jit-tests ${BUXN_JIT_TEST_SOURCES})

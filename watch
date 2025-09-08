@@ -1,6 +1,6 @@
 #!/bin/sh -e
 
-export BUILD_TYPE=${1:-Debug}
+export BUILD_TYPE=${BUILD_TYPE:-Debug}
 
 if ./build $@
 then

@@ -427,7 +427,7 @@ buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
 		SLJIT_MEM1(SLJIT_S(BUXN_JIT_S_VM)), SLJIT_OFFSETOF(buxn_vm_t, rsp),
 		SLJIT_R(BUXN_JIT_R_RSP), 0
 	);
-	sljit_emit_return(ctx->compiler, SLJIT_MOV_U32, SLJIT_IMM, 0);
+	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
 	ctx->block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
 	sljit_free_compiler(ctx->compiler);
 	ctx->compiler = NULL;
@@ -959,6 +959,7 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
 		.compiler = compiler,
 		.jit = jit,
 		.pc = pc,
+		.block = block,
 	};
 
 	uint8_t shadow_wsp;

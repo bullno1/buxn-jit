@@ -21,6 +21,6 @@ buxn_jit_cleanup(buxn_jit_t* jit);
 // Must be provided by the host program
 
 extern void*
-buxn_jit_alloc(buxn_jit_alloc_ctx_t*, size_t size, size_t alignment);
+buxn_jit_alloc(buxn_jit_alloc_ctx_t* ctx, size_t size, size_t alignment);
 
 #endif
