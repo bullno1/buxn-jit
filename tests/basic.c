@@ -63,8 +63,8 @@ BTEST(basic, arithmetic) {
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 3);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 3);
 }
 
 BTEST(basic, arithmetic_short) {
@@ -76,9 +76,9 @@ BTEST(basic, arithmetic_short) {
 	fixture.vm->wsp = 4;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 2);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 0);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 0);
 }
 
 BTEST(basic, arithmetic_keep) {
@@ -88,10 +88,10 @@ BTEST(basic, arithmetic_keep) {
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 3);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 2);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[2], 3);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 3);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[2], 3);
 }
 
 BTEST(basic, arithmetic_return) {
@@ -101,15 +101,15 @@ BTEST(basic, arithmetic_return) {
 	fixture.vm->rsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->rsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->rs[0], 3);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->rs[0], 3);
 }
 
 BTEST(basic, stack_wrap_around) {
 	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x02; // POP
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 0xff);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0xff);
 }
 
 BTEST(basic, stack_wrap_around_2) {
@@ -119,9 +119,9 @@ BTEST(basic, stack_wrap_around_2) {
 	fixture.vm->wsp = 1;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 2);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[255], 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[255], 2);
 }
 
 BTEST(basic, div) {
@@ -131,16 +131,16 @@ BTEST(basic, div) {
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 3);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 3);
 
 	fixture.vm->ws[0] = 6;
 	fixture.vm->ws[1] = 0;
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 0);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0);
 }
 
 BTEST(basic, cmp) {
@@ -150,8 +150,8 @@ BTEST(basic, cmp) {
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 1);
 }
 
 BTEST(basic, sft) {
@@ -161,6 +161,6 @@ BTEST(basic, sft) {
 	fixture.vm->wsp = 2;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 0x30);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x30);
 }

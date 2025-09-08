@@ -10,6 +10,8 @@
 
 #define BUXN_JIT_ADDR_EQ(LHS, RHS) (LHS == RHS)
 #define BUXN_JIT_MEM() SLJIT_MEM2(SLJIT_R(BUXN_JIT_R_MEM_BASE), SLJIT_R(BUXN_JIT_R_MEM_OFFSET))
+#define BUXN_JIT_MEM_OFFSET() SLJIT_R(BUXN_JIT_R_MEM_OFFSET)
+#define BUXN_JIT_TMP() SLJIT_R(BUXN_JIT_R_TMP)
 
 #define BUXN_JIT_OP_K 0x80
 #define BUXN_JIT_OP_R 0x40
@@ -31,7 +33,7 @@ enum {
 	BUXN_JIT_R_OP_A,
 	BUXN_JIT_R_OP_B,
 	BUXN_JIT_R_OP_C,
-	BUXN_JIT_R_OP_T,
+	BUXN_JIT_R_TMP,
 
 	BUXN_JIT_R_COUNT,
 };
@@ -229,7 +231,7 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op1(
@@ -249,20 +251,20 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_TMP(), 0,
 			BUXN_JIT_MEM(), 0
 		);
 		sljit_emit_op2(
 			ctx->compiler,
 			SLJIT_SHL,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_TMP(), 0,
+			BUXN_JIT_TMP(), 0,
 			SLJIT_IMM, 8
 		);
 		sljit_emit_op2(
@@ -270,7 +272,7 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 			SLJIT_OR,
 			reg, 0,
 			reg, 0,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0
+			BUXN_JIT_TMP(), 0
 		);
 	} else {
 		buxn_jit_value_t value = stack[--(*stack_ptr)];
@@ -288,7 +290,7 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op1(
@@ -321,13 +323,13 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op2(
 			ctx->compiler,
 			SLJIT_LSHR,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_TMP(), 0,
 			operand.reg, 0,
 			SLJIT_IMM, 8
 		);
@@ -335,7 +337,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 			ctx->compiler,
 			SLJIT_MOV_U8,
 			BUXN_JIT_MEM(), 0,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0
+			BUXN_JIT_TMP(), 0
 		);
 		sljit_emit_op2(
 			ctx->compiler,
@@ -348,13 +350,13 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op2(
 			ctx->compiler,
 			SLJIT_AND,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_TMP(), 0,
 			operand.reg, 0,
 			SLJIT_IMM, 0xff
 		);
@@ -362,7 +364,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 			ctx->compiler,
 			SLJIT_MOV_U8,
 			BUXN_JIT_MEM(), 0,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0
+			BUXN_JIT_TMP(), 0
 		);
 		sljit_emit_op2(
 			ctx->compiler,
@@ -380,7 +382,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			stack_ptr_reg, 0
 		);
 		sljit_emit_op1(
@@ -407,6 +409,137 @@ buxn_jit_pop(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 static void
 buxn_jit_push(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
 	buxn_jit_push_ex(ctx, operand, buxn_jit_op_flag_r(ctx));
+}
+
+static buxn_jit_operand_t
+buxn_jit_load(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_reg_t reg,
+	buxn_jit_operand_t addr
+) {
+	buxn_jit_operand_t result = {
+		.is_short = buxn_jit_op_flag_2(ctx),
+		.reg = reg,
+	};
+
+	buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_U16,
+		BUXN_JIT_MEM_OFFSET(), 0,
+		addr.reg, 0
+	);
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_U8,
+		result.reg, 0,
+		BUXN_JIT_MEM(), 0
+	);
+
+	if (result.is_short) {
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SHL,
+			result.reg, 0,
+			result.reg, 0,
+			SLJIT_IMM, 8
+		);
+
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, 1
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_AND,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, addr.is_short ? 0xffff : 0x00ff
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_TMP(), 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_OR,
+			result.reg, 0,
+			result.reg, 0,
+			BUXN_JIT_TMP(), 0
+		);
+	}
+
+	return result;
+}
+
+static void
+buxn_jit_store(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_operand_t addr,
+	buxn_jit_operand_t value
+) {
+	buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+
+	if (value.is_short) {
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			addr.reg, 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_LSHR,
+			BUXN_JIT_TMP(), 0,
+			value.reg, 0,
+			SLJIT_IMM, 8
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			BUXN_JIT_TMP(), 0
+		);
+
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, 1
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_AND,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, addr.is_short ? 0xffff : 0x00ff
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			value.reg, 0
+		);
+	} else {
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			addr.reg, 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			value.reg, 0
+		);
+	}
 }
 
 // }}}
@@ -624,26 +757,72 @@ buxn_jit_STH(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_LDZ(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
+	buxn_jit_push(ctx, value);
 }
 
 static void
 buxn_jit_STZ(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_store(ctx, addr, value);
 }
 
 static void
 buxn_jit_LDR(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_S8,
+		addr.reg, 0,
+		addr.reg, 0
+	);
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_ADD,
+		addr.reg, 0,
+		addr.reg, 0,
+		SLJIT_IMM, ctx->pc
+	);
+	addr.is_short = true;
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
+	buxn_jit_push(ctx, value);
 }
 
 static void
 buxn_jit_STR(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_S8,
+		addr.reg, 0,
+		addr.reg, 0
+	);
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_ADD,
+		addr.reg, 0,
+		addr.reg, 0,
+		SLJIT_IMM, ctx->pc
+	);
+	addr.is_short = true;
+	buxn_jit_store(ctx, addr, value);
 }
 
 static void
 buxn_jit_LDA(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), true, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
+	buxn_jit_push(ctx, value);
 }
 
 static void
 buxn_jit_STA(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), true, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_store(ctx, addr, value);
 }
 
 static void
@@ -752,7 +931,7 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0,
+		BUXN_JIT_TMP(), 0,
 		SLJIT_R0, 0
 	);
 	sljit_emit_op1(
@@ -778,7 +957,7 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 		ctx->compiler,
 		SLJIT_MOV,
 		SLJIT_R0, 0,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0
+		BUXN_JIT_TMP(), 0
 	);
 	struct sljit_jump* end = sljit_emit_jump(ctx->compiler, SLJIT_JUMP);
 
@@ -882,7 +1061,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 	sljit_emit_op2(
 		ctx->compiler,
 		SLJIT_AND,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0,
+		BUXN_JIT_TMP(), 0,
 		b.reg, 0,
 		SLJIT_IMM, 0x0f
 	);
@@ -891,12 +1070,12 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 		SLJIT_LSHR,
 		c.reg, 0,
 		a.reg, 0,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0
+		BUXN_JIT_TMP(), 0
 	);
 	sljit_emit_op2(
 		ctx->compiler,
 		SLJIT_LSHR,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0,
+		BUXN_JIT_TMP(), 0,
 		b.reg, 0,
 		SLJIT_IMM, 4
 	);
@@ -905,7 +1084,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 		SLJIT_SHL,
 		c.reg, 0,
 		c.reg, 0,
-		SLJIT_R(BUXN_JIT_R_OP_T), 0
+		BUXN_JIT_TMP(), 0
 	);
 
 	buxn_jit_push(ctx, c);
@@ -934,8 +1113,8 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 	};
 
 	if (buxn_jit_op_flag_2(ctx)) {
-		uint8_t hi = ctx->jit->vm->memory[ctx->pc];
-		uint8_t lo = ctx->jit->vm->memory[ctx->pc + 1];
+		uint8_t hi = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 0)];
+		uint8_t lo = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 1)];
 		lit.const_value = (uint16_t)hi << 8 | (uint16_t)lo;
 
 		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
@@ -943,7 +1122,7 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U16,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			SLJIT_IMM, ctx->pc
 		);
 		sljit_emit_op1(
@@ -963,13 +1142,13 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U16,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			SLJIT_IMM, ctx->pc + 1
 		);
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0,
+			BUXN_JIT_TMP(), 0,
 			BUXN_JIT_MEM(), 0
 		);
 		sljit_emit_op2(
@@ -977,7 +1156,7 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 			SLJIT_OR,
 			lit.reg, 0,
 			lit.reg, 0,
-			SLJIT_R(BUXN_JIT_R_OP_T), 0
+			BUXN_JIT_TMP(), 0
 		);
 
 		ctx->pc += 2;
@@ -988,7 +1167,7 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U16,
-			SLJIT_R(BUXN_JIT_R_MEM_OFFSET), 0,
+			BUXN_JIT_MEM_OFFSET(), 0,
 			SLJIT_IMM, ctx->pc
 		);
 		sljit_emit_op1(

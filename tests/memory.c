@@ -2,6 +2,7 @@
 #include <barena.h>
 #include <buxn/vm/vm.h>
 #include <buxn/vm/jit.h>
+#include "common.h"
 
 static struct {
 	barena_pool_t pool;
@@ -57,8 +58,8 @@ BTEST(memory, lit) {
 	fixture.vm->memory[BUXN_RESET_VECTOR + 1] = 0x42;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 0x42);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x42);
 }
 
 BTEST(memory, lit2) {
@@ -67,7 +68,35 @@ BTEST(memory, lit2) {
 	fixture.vm->memory[BUXN_RESET_VECTOR + 2] = 0x69;
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->wsp, 2);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[0], 0x42);
-	BTEST_ASSERT_EQUAL("%d", fixture.vm->ws[1], 0x69);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x42);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 0x69);
+}
+
+BTEST(memory, ldz) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"|ff @cell |0100 .cell LDZ2"
+	));
+	fixture.vm->memory[0x00] = 0xcd;
+	fixture.vm->memory[0xff] = 0xab;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0xab);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[1], 0xcd);
+}
+
+BTEST(memory, stz) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"|ff @cell $2 |0100 #abcd .cell STZ2"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->memory[0x00], 0xcd);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->memory[0xff], 0xab);
 }
