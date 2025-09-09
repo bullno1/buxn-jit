@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 struct barena_s;
 struct buxn_vm_s;
@@ -22,5 +23,13 @@ buxn_asm_str(
 );
 
 #define buxn_asm_str(arena, rom, str) buxn_asm_str(arena, rom, str, __FILE__, __LINE__)
+
+bool
+buxn_asm_str_len(
+	struct barena_s* arena,
+	uint8_t* rom,
+	const char* str, size_t len,
+	const char* file, int line
+);
 
 #endif

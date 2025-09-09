@@ -53,3 +53,7 @@ main(int argc, const char* argv[]) {
 #include <blog.h>
 #include <barena.h>
 #include <btest.h>
+#include <xincbin.h>
+
+#define XINCBIN_IMPLEMENTATION
+#include "resources.rc"

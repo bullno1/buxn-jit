@@ -1,0 +1,3 @@
+#include <xincbin.h>
+
+XINCBIN(opctest_tal, "../../deps/buxn/tests/opctest.tal")

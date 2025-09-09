@@ -1,6 +1,7 @@
 #include <buxn/vm/vm.h>
 #include <buxn/vm/jit.h>
 #include <buxn/asm/asm.h>
+#include <buxn/devices/console.h>
 #include <blog.h>
 #include <barena.h>
 #include <xincbin.h>
@@ -49,11 +50,22 @@ buxn_jit_alloc(buxn_jit_alloc_ctx_t* ctx, size_t size, size_t alignment) {
 	return barena_memalign((barena_t*)ctx, size, alignment);
 }
 
+
 bool
 (buxn_asm_str)(
 	barena_t* arena,
 	uint8_t* rom,
 	const char* str,
+	const char* file, int line
+) {
+	return buxn_asm_str_len(arena, rom, str, strlen(str), file, line);
+}
+
+bool
+buxn_asm_str_len(
+	struct barena_s* arena,
+	uint8_t* rom,
+	const char* str, size_t len,
 	const char* file, int line
 ) {
 	buxn_asm_ctx_t basm = {
@@ -69,7 +81,7 @@ bool
 	basm.vfs = (buxn_vfs_entry_t[]) {
 		{
 			.name = filename,
-			.content = { .data = (const unsigned char*)str, .size = (unsigned int)strlen(str) }
+			.content = { .data = (const unsigned char*)str, .size = len }
 		},
 		{ 0 },
 	};
@@ -151,4 +163,33 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 void*
 buxn_asm_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
 	return barena_memalign(ctx->arena, size, alignment);
+}
+
+void
+buxn_system_debug(buxn_vm_t* vm, uint8_t value) {
+}
+
+void
+buxn_system_set_metadata(buxn_vm_t* vm, uint16_t address) {
+	(void)vm;
+	(void)address;
+}
+
+void
+buxn_system_theme_changed(buxn_vm_t* vm) {
+	(void)vm;
+}
+
+void
+buxn_console_handle_write(struct buxn_vm_s* vm, buxn_console_t* device, char c) {
+	(void)vm;
+	(void)device;
+	fputc(c, stdout);
+}
+
+void
+buxn_console_handle_error(struct buxn_vm_s* vm, buxn_console_t* device, char c) {
+	(void)vm;
+	(void)device;
+	fputc(c, stderr);
 }

@@ -9,6 +9,9 @@ target_link_libraries(buxn-vm PUBLIC buxn)
 add_library(buxn-asm STATIC "buxn/src/asm/asm.c")
 target_link_libraries(buxn-asm PUBLIC buxn)
 
+add_library(buxn-devices STATIC "buxn/src/devices/console.c" "buxn/src/devices/system.c")
+target_link_libraries(buxn-devices PUBLIC buxn)
+
 # --- sljit ---
 
 add_library(sljit STATIC "sljit/sljit_src/sljitLir.c")

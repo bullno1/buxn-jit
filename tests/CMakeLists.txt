@@ -6,6 +6,7 @@ set(BUXN_JIT_TEST_SOURCES
 	"memory.c"
 	"device.c"
 	"jump.c"
+	"opctest.c"
 )
 
 add_executable(buxn-jit-tests ${BUXN_JIT_TEST_SOURCES})
@@ -13,5 +14,6 @@ target_link_libraries(buxn-jit-tests PRIVATE
 	buxn-jit
 	buxn-vm
 	buxn-asm
+	buxn-devices
 	blibs
 )

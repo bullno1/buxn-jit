@@ -164,3 +164,16 @@ BTEST(basic, sft) {
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->ws[0], 0x30);
 }
+
+BTEST(basic, sft2) {
+	fixture.vm->memory[BUXN_RESET_VECTOR] = 0x3f; // SFT2
+	fixture.vm->ws[0] = 0xff;
+	fixture.vm->ws[1] = 0xff;
+	fixture.vm->ws[2] = 0x01;
+	fixture.vm->wsp = 3;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x7f);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0xff);
+}

@@ -1492,7 +1492,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
 
 	buxn_jit_operand_t c = {
-		.is_short = b.is_short,
+		.is_short = a.is_short,
 		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
 			? BUXN_JIT_SEM_CONST
 			: 0,
