@@ -60,6 +60,9 @@ BTEST(jump, jmp) {
 		",&skip-rel JMP BRK &skip-rel #01  ( 01 )"
 	));
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jcn_true) {
@@ -72,6 +75,9 @@ BTEST(jump, jcn_true) {
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xab);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jcn_false) {
@@ -84,6 +90,9 @@ BTEST(jump, jcn_false) {
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xcd);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jsr) {
@@ -102,6 +111,9 @@ BTEST(jump, jsr) {
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 2);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->rs[0], 0x01);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->rs[1], 0x03);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jci_true) {
@@ -114,6 +126,10 @@ BTEST(jump, jci_true) {
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0a);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 2);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jci_false) {
@@ -126,6 +142,10 @@ BTEST(jump, jci_false) {
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0b);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 2);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jmi) {
@@ -158,6 +178,9 @@ BTEST(jump, jsi) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x03);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 0);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, redirect) {

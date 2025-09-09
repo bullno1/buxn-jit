@@ -1670,6 +1670,7 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 static buxn_jit_block_t*
 buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 	buxn_jit_block_t* block = buxn_jit_queue_block(jit, pc);
+	if (block->fn != NULL) { return block; }
 
 	buxn_jit_entry_t* entry;
 
