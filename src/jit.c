@@ -51,6 +51,7 @@ struct buxn_jit_block_s {
 	buxn_jit_block_t* children[BHAMT_NUM_CHILDREN];
 
 	buxn_jit_fn_t fn;
+	sljit_uw head_addr;
 	sljit_uw body_addr;
 	sljit_sw executable_offset;
 
@@ -82,10 +83,16 @@ typedef struct {
 	buxn_jit_reg_t reg;
 } buxn_jit_operand_t;
 
+typedef enum {
+	BUXN_JIT_LINK_TO_HEAD,
+	BUXN_JIT_LINK_TO_BODY,
+} buxn_jit_link_type_t;
+
 typedef struct buxn_jit_entry_s buxn_jit_entry_t;
 struct buxn_jit_entry_s {
 	buxn_jit_entry_t* next;
 
+	buxn_jit_link_type_t link_type;
 	buxn_jit_block_t* block;
 	struct sljit_compiler* compiler;
 	union {
@@ -111,6 +118,7 @@ typedef struct {
 	buxn_jit_t* jit;
 	buxn_jit_block_t* block;
 	struct sljit_compiler* compiler;
+	struct sljit_label* head_label;
 	struct sljit_label* body_label;
 	uint16_t pc;
 	uint8_t current_opcode;
@@ -657,34 +665,96 @@ static void
 buxn_jit_current_opcode(buxn_jit_ctx_t* ctx);
 
 static void
-buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target) {
+buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
+	struct sljit_jump* exit = NULL;
+	// TODO: Improve indirect (non-const) call
+	// Call into a trampoline helper function
 	if (target.semantics & BUXN_JIT_SEM_CONST) {
-		// Recheck assumed constant value before jumping
-		sljit_emit_op2u(
-			ctx->compiler,
-			SLJIT_SUB | SLJIT_SET_Z,
-			target.reg, 0,
-			SLJIT_IMM, target.const_value
-		);
-		struct sljit_jump* jump = sljit_emit_jump(ctx->compiler, SLJIT_EQUAL | SLJIT_REWRITABLE_JUMP);
-		buxn_jit_block_t* block = buxn_jit_queue_block(ctx->jit, target.const_value);
-		sljit_set_label(jump, sljit_emit_label(ctx->compiler));
+		if (return_addr == 0) {
+			// Recheck assumed constant value before jumping
+			struct sljit_jump* jump = sljit_emit_cmp(
+				ctx->compiler,
+				SLJIT_EQUAL | SLJIT_REWRITABLE_JUMP,
+				target.reg, 0,
+				SLJIT_IMM, target.const_value
+			);
+			sljit_set_label(jump, sljit_emit_label(ctx->compiler));
 
-		buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
-		entry->block = block;
-		entry->compiler = ctx->compiler;
-		entry->jump = jump;
-		buxn_jit_enqueue(&ctx->jit->link_queue, entry);
+			buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
+			entry->link_type = BUXN_JIT_LINK_TO_BODY;
+			entry->block = buxn_jit_queue_block(ctx->jit, target.const_value);
+			entry->compiler = ctx->compiler;
+			entry->jump = jump;
+			buxn_jit_enqueue(&ctx->jit->link_queue, entry);
+		} else {
+			// Recheck assumed constant value before calling
+			struct sljit_jump* skip_call = sljit_emit_cmp(
+				ctx->compiler,
+				SLJIT_NOT_EQUAL,
+				target.reg, 0,
+				SLJIT_IMM, target.const_value
+			);
+
+			buxn_jit_save_state(ctx);
+			ctx->mem_base = 0;
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV,
+				SLJIT_R0, 0,
+				SLJIT_S(BUXN_JIT_S_VM), 0
+			);
+			struct sljit_jump* call = sljit_emit_call(
+				ctx->compiler,
+				SLJIT_CALL | SLJIT_REWRITABLE_JUMP,
+				SLJIT_ARGS1(32, P)
+			);
+
+			// If the return address is not as expected, trampoline
+			exit = sljit_emit_cmp(
+				ctx->compiler,
+				SLJIT_EQUAL,
+				SLJIT_R0, 0,
+				SLJIT_IMM, return_addr
+			);
+			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_R0, 0);
+
+			// Fallback stub in case we can't call for whatever reason
+			sljit_set_label(call, sljit_emit_label(ctx->compiler));
+			sljit_emit_enter(
+				ctx->compiler,
+				0,
+				SLJIT_ARGS1(32, P),
+				BUXN_JIT_R_COUNT,
+				BUXN_JIT_S_COUNT,
+				0
+			);
+			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, target.const_value);
+			sljit_set_label(skip_call, sljit_emit_label(ctx->compiler));
+
+			buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
+			entry->link_type = BUXN_JIT_LINK_TO_HEAD;
+			entry->block = buxn_jit_queue_block(ctx->jit, target.const_value);
+			entry->compiler = ctx->compiler;
+			entry->jump = call;
+			buxn_jit_enqueue(&ctx->jit->link_queue, entry);
+		}
 	}
 
+	// Return to trampoline.
+	// This is always correct but slow.
 	buxn_jit_save_state(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, target.reg, 0);
+
+	if (exit != NULL) {
+		sljit_set_label(exit, sljit_emit_label(ctx->compiler));
+		buxn_jit_load_state(ctx);
+	}
 }
 
 static void
-buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target) {
+buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
 	if (target.is_short) {
-		buxn_jit_jump_abs(ctx, target);
+		buxn_jit_jump_abs(ctx, target, return_addr);
 	} else {
 		if (target.semantics & BUXN_JIT_SEM_BOOLEAN) {
 			struct sljit_jump* skip_next_opcode = sljit_emit_cmp(
@@ -712,7 +782,7 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target) {
 			);
 			target.const_value = (uint16_t)((int32_t)ctx->pc + (int32_t)(int8_t)target.const_value);
 
-			buxn_jit_jump_abs(ctx, target);
+			buxn_jit_jump_abs(ctx, target, return_addr);
 		}
 	}
 }
@@ -729,15 +799,18 @@ buxn_jit_conditional_jump(
 		condition.reg, 0,
 		SLJIT_IMM, 0
 	);
-	buxn_jit_jump(ctx, target);
+	buxn_jit_jump(ctx, target, 0);
 	sljit_set_label(skip_jump, sljit_emit_label(ctx->compiler));
 }
 
 static void
 buxn_jit_finalize(buxn_jit_ctx_t* ctx) {
-	ctx->block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
-	ctx->block->body_addr = sljit_get_label_addr(ctx->body_label);
-	ctx->block->executable_offset = sljit_get_executable_offset(ctx->compiler);
+	buxn_jit_block_t* block = ctx->block;
+	block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
+	block->head_addr = sljit_get_label_addr(ctx->head_label);
+	block->body_addr = sljit_get_label_addr(ctx->body_label);
+	block->executable_offset = sljit_get_executable_offset(ctx->compiler);
+
 	ctx->compiler = NULL;
 }
 
@@ -1027,7 +1100,7 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_JMP(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
-	buxn_jit_jump(ctx, target);
+	buxn_jit_jump(ctx, target, 0);
 	buxn_jit_finalize(ctx);
 }
 
@@ -1053,8 +1126,7 @@ buxn_jit_JSR(buxn_jit_ctx_t* ctx) {
 		SLJIT_IMM, ctx->pc
 	);
 	buxn_jit_push_ex(ctx, pc, !buxn_jit_op_flag_r(ctx));
-	buxn_jit_jump(ctx, target);
-	buxn_jit_finalize(ctx);
+	buxn_jit_jump(ctx, target, ctx->pc);
 }
 
 static void
@@ -1549,7 +1621,7 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_JMI(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
-	buxn_jit_jump(ctx, target);
+	buxn_jit_jump(ctx, target, 0);
 	buxn_jit_finalize(ctx);
 }
 
@@ -1567,8 +1639,7 @@ buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
 		SLJIT_IMM, ctx->pc
 	);
 	buxn_jit_push_ex(ctx, pc, true);
-	buxn_jit_jump(ctx, target);
-	buxn_jit_finalize(ctx);
+	buxn_jit_jump(ctx, target, ctx->pc);
 }
 
 static void
@@ -1596,6 +1667,7 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 	};
 
 	/*sljit_compiler_verbose(ctx.compiler, stderr);*/
+	ctx.head_label = sljit_emit_label(ctx.compiler);
 	sljit_emit_enter(
 		ctx.compiler,
 		0,
@@ -1680,10 +1752,13 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 	}
 
 	while ((entry = buxn_jit_dequeue(&jit->link_queue)) != NULL) {
-		if (entry->block->body_addr != 0) {
+		sljit_uw target = entry->link_type == BUXN_JIT_LINK_TO_HEAD
+			? entry->block->head_addr
+			: entry->block->body_addr;
+		if (target != 0) {
 			sljit_set_jump_addr(
 				sljit_get_jump_addr(entry->jump),
-				entry->block->body_addr,
+				target,
 				entry->block->executable_offset
 			);
 		}
