@@ -102,6 +102,7 @@ struct buxn_jit_s {
 
 	buxn_jit_entry_t* compile_queue;
 	buxn_jit_entry_t* link_queue;
+	buxn_jit_entry_t* cleanup_queue;
 	buxn_jit_entry_t* entry_pool;
 };
 
@@ -225,6 +226,10 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 		compile_entry->compiler = compiler;
 		compile_entry->pc = pc;
 		buxn_jit_enqueue(&jit->compile_queue, compile_entry);
+
+		buxn_jit_entry_t* cleanup_entry = buxn_jit_alloc_entry(jit);
+		cleanup_entry->compiler = compiler;
+		buxn_jit_enqueue(&jit->cleanup_queue, cleanup_entry);
 	}
 
 	return block;
@@ -1674,6 +1679,11 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 			);
 		}
 
+		buxn_jit_enqueue(&jit->entry_pool, entry);
+	}
+
+	while ((entry = buxn_jit_dequeue(&jit->cleanup_queue)) != NULL) {
+		sljit_free_compiler(entry->compiler);
 		buxn_jit_enqueue(&jit->entry_pool, entry);
 	}
 
