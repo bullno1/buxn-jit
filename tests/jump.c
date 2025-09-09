@@ -61,3 +61,97 @@ BTEST(jump, jmp) {
 	));
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 }
+
+BTEST(jump, jcn_true) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#abcd #01 ,&pass JCN SWP &pass POP  ( ab )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xab);
+}
+
+BTEST(jump, jcn_false) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#abcd #00 ,&fail JCN SWP &fail POP  ( cd )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0xcd);
+}
+
+BTEST(jump, jsr) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		",&routine JSR                     ( | PC* )\n"
+		"&routine ,&get JSR #01 BRK &get #02 JMP2r  ( 02 01 )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x02);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0x01);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->rs[0], 0x01);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->rs[1], 0x03);
+}
+
+BTEST(jump, jci_true) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0a #01 ?{ INC }          ( 0a )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0a);
+}
+
+BTEST(jump, jci_false) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0a #00 ?{ INC }          ( 0b )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0b);
+}
+
+BTEST(jump, jmi) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0a !{ INC }              ( 0a )"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0a);
+}
+
+BTEST(jump, jsi) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#07 #04 modulo BRK        ( 03 )\n"
+		"@modulo ( a mod -- res )\n"
+		"DIVk MUL SUB JMP2r"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x03);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 0);
+}
