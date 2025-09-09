@@ -9,8 +9,16 @@ struct buxn_vm_s;
 typedef struct buxn_jit_s buxn_jit_t;
 typedef struct buxn_jit_alloc_ctx_s buxn_jit_alloc_ctx_t;
 
+typedef struct {
+	int num_blocks;
+	int num_bounces;
+} buxn_jit_stats_t;
+
 buxn_jit_t*
 buxn_jit_init(struct buxn_vm_s* vm, buxn_jit_alloc_ctx_t* alloc_ctx);
+
+buxn_jit_stats_t*
+buxn_jit_stats(buxn_jit_t* jit);
 
 void
 buxn_jit_execute(buxn_jit_t* jit, uint16_t pc);

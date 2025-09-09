@@ -97,6 +97,7 @@ struct buxn_jit_entry_s {
 struct buxn_jit_s {
 	buxn_vm_t* vm;
 	buxn_jit_alloc_ctx_t* alloc_ctx;
+	buxn_jit_stats_t stats;
 
 	buxn_jit_block_map_t blocks;
 
@@ -148,12 +149,18 @@ buxn_jit_init(buxn_vm_t* vm, buxn_jit_alloc_ctx_t* alloc_ctx) {
 	return jit;
 }
 
+buxn_jit_stats_t*
+buxn_jit_stats(buxn_jit_t* jit) {
+	return &jit->stats;
+}
+
 void
 buxn_jit_execute(buxn_jit_t* jit, uint16_t pc) {
 	while (pc != 0) {
 		if (pc >= BUXN_RESET_VECTOR) {
 			buxn_jit_block_t* block = buxn_jit(jit, pc);
 			pc = (uint16_t)block->fn((uintptr_t)jit->vm);
+			jit->stats.num_bounces += (pc != 0);
 		} else {
 			buxn_vm_execute(jit->vm, pc);
 		}
@@ -218,6 +225,7 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 		};
 		block->next = jit->blocks.first;
 		jit->blocks.first = block;
+		++jit->stats.num_blocks;
 
 		struct sljit_compiler* compiler = sljit_create_compiler(NULL);
 

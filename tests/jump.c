@@ -138,6 +138,10 @@ BTEST(jump, jmi) {
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x0a);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 2);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, jsi) {
@@ -154,4 +158,31 @@ BTEST(jump, jsi) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x03);
 
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->rsp, 0);
+}
+
+BTEST(jump, redirect) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"[ LIT2 =first ] JMP2 |0200 @first #01 |0300 @second #02"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x01);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 2);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
+
+	// Rewrite jump target
+	fixture.vm->memory[0x0101] = 0x03;
+	fixture.vm->wsp = 0;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x02);
+
+	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 3);  // New block
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 1);  // Jump trampolined
 }
