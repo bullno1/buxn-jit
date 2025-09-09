@@ -5,6 +5,7 @@ set(BUXN_JIT_TEST_SOURCES
 	"basic.c"
 	"memory.c"
 	"device.c"
+	"jump.c"
 )
 
 add_executable(buxn-jit-tests ${BUXN_JIT_TEST_SOURCES})

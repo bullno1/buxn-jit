@@ -41,7 +41,7 @@ enum {
 #undef BUXN_OPCODE_NAME
 #define BUXN_OPCODE_NAME(NAME, K, R, S) NAME
 #define BUXN_JIT_DISPATCH(NAME, VALUE) \
-	case VALUE: BUXN_CONCAT(buxn_jit_, NAME)(&ctx); break;
+	case VALUE: BUXN_CONCAT(buxn_jit_, NAME)(ctx); break;
 
 typedef sljit_u32 (*buxn_jit_fn_t)(sljit_up vm);
 
@@ -51,6 +51,9 @@ struct buxn_jit_block_s {
 	buxn_jit_block_t* children[BHAMT_NUM_CHILDREN];
 
 	buxn_jit_fn_t fn;
+	sljit_uw body_addr;
+	sljit_sw executable_offset;
+
 	buxn_jit_block_t* next;
 };
 
@@ -79,17 +82,34 @@ typedef struct {
 	buxn_jit_reg_t reg;
 } buxn_jit_operand_t;
 
+typedef struct buxn_jit_entry_s buxn_jit_entry_t;
+struct buxn_jit_entry_s {
+	buxn_jit_entry_t* next;
+
+	buxn_jit_block_t* block;
+	struct sljit_compiler* compiler;
+	union {
+		struct sljit_jump* jump;
+		uint16_t pc;
+	};
+};
+
 struct buxn_jit_s {
 	buxn_vm_t* vm;
 	buxn_jit_alloc_ctx_t* alloc_ctx;
 
 	buxn_jit_block_map_t blocks;
+
+	buxn_jit_entry_t* compile_queue;
+	buxn_jit_entry_t* link_queue;
+	buxn_jit_entry_t* entry_pool;
 };
 
 typedef struct {
 	buxn_jit_t* jit;
 	buxn_jit_block_t* block;
 	struct sljit_compiler* compiler;
+	struct sljit_label* body_label;
 	uint16_t pc;
 	uint8_t current_opcode;
 	sljit_sw mem_base;
@@ -114,8 +134,8 @@ buxn_jit_prospector32(uint32_t x) {
 	return x;
 }
 
-static void
-buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block);
+static buxn_jit_block_t*
+buxn_jit(buxn_jit_t* jit, uint16_t pc);
 
 buxn_jit_t*
 buxn_jit_init(buxn_vm_t* vm, buxn_jit_alloc_ctx_t* alloc_ctx) {
@@ -130,26 +150,8 @@ buxn_jit_init(buxn_vm_t* vm, buxn_jit_alloc_ctx_t* alloc_ctx) {
 void
 buxn_jit_execute(buxn_jit_t* jit, uint16_t pc) {
 	while (pc != 0) {
-		uint32_t hash = buxn_jit_prospector32(pc);
-		buxn_jit_block_t** itr;
-		buxn_jit_block_t* block;
-		BHAMT_SEARCH(jit->blocks.root, itr, block, hash, pc, BUXN_JIT_ADDR_EQ);
-		if (block == NULL) {
-			block = *itr = buxn_jit_alloc(
-				jit->alloc_ctx,
-				sizeof(buxn_jit_block_t),
-				_Alignof(buxn_jit_block_t)
-			);
-			*block = (buxn_jit_block_t){
-				.key = pc,
-			};
-			block->next = jit->blocks.first;
-			jit->blocks.first = block;
-
-			buxn_jit(jit, pc, block);
-		}
-
-		if (block->fn != NULL) {
+		if (pc >= BUXN_RESET_VECTOR) {
+			buxn_jit_block_t* block = buxn_jit(jit, pc);
 			pc = (uint16_t)block->fn((uintptr_t)jit->vm);
 		} else {
 			buxn_vm_execute(jit->vm, pc);
@@ -165,6 +167,70 @@ buxn_jit_cleanup(buxn_jit_t* jit) {
 		}
 	}
 }
+
+// JIT queue {{{
+
+static buxn_jit_entry_t*
+buxn_jit_dequeue(buxn_jit_entry_t** queue) {
+	buxn_jit_entry_t* entry = *queue;
+	if (entry != NULL) {
+		*queue = entry->next;
+	}
+
+	return entry;
+}
+
+static void
+buxn_jit_enqueue(buxn_jit_entry_t** queue, buxn_jit_entry_t* entry) {
+	entry->next = *queue;
+	*queue = entry;
+}
+
+static buxn_jit_entry_t*
+buxn_jit_alloc_entry(buxn_jit_t* jit) {
+	buxn_jit_entry_t* entry = buxn_jit_dequeue(&jit->entry_pool);
+	if (entry == NULL) {
+		entry = buxn_jit_alloc(
+			jit->alloc_ctx,
+			sizeof(buxn_jit_entry_t),
+			_Alignof(buxn_jit_entry_t)
+		);
+	}
+
+	return entry;
+}
+
+static buxn_jit_block_t*
+buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
+	uint32_t hash = buxn_jit_prospector32(pc);
+	buxn_jit_block_t** itr;
+	buxn_jit_block_t* block;
+	BHAMT_SEARCH(jit->blocks.root, itr, block, hash, pc, BUXN_JIT_ADDR_EQ);
+	if (block == NULL) {
+		block = *itr = buxn_jit_alloc(
+			jit->alloc_ctx,
+			sizeof(buxn_jit_block_t),
+			_Alignof(buxn_jit_block_t)
+		);
+		*block = (buxn_jit_block_t){
+			.key = pc,
+		};
+		block->next = jit->blocks.first;
+		jit->blocks.first = block;
+
+		struct sljit_compiler* compiler = sljit_create_compiler(NULL);
+
+		buxn_jit_entry_t* compile_entry = buxn_jit_alloc_entry(jit);
+		compile_entry->block = block;
+		compile_entry->compiler = compiler;
+		compile_entry->pc = pc;
+		buxn_jit_enqueue(&jit->compile_queue, compile_entry);
+	}
+
+	return block;
+}
+
+// }}}
 
 // Micro ops {{{
 
@@ -574,6 +640,199 @@ buxn_jit_save_state(buxn_jit_ctx_t* ctx) {
 	);
 }
 
+static void
+buxn_jit_current_opcode(buxn_jit_ctx_t* ctx);
+
+static void
+buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target) {
+	if (target.semantics & BUXN_JIT_SEM_CONST) {
+		// Recheck assumed constant value before jumping
+		sljit_emit_op2u(
+			ctx->compiler,
+			SLJIT_SUB | SLJIT_SET_Z,
+			target.reg, 0,
+			SLJIT_IMM, target.const_value
+		);
+		struct sljit_jump* jump = sljit_emit_jump(ctx->compiler, SLJIT_EQUAL | SLJIT_REWRITABLE_JUMP);
+		buxn_jit_block_t* block = buxn_jit_queue_block(ctx->jit, target.const_value);
+		sljit_set_label(jump, sljit_emit_label(ctx->compiler));
+
+		buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
+		entry->block = block;
+		entry->compiler = ctx->compiler;
+		entry->jump = jump;
+		buxn_jit_enqueue(&ctx->jit->link_queue, entry);
+	}
+
+	buxn_jit_save_state(ctx);
+	sljit_emit_return(ctx->compiler, SLJIT_MOV32, target.reg, 0);
+}
+
+static void
+buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target) {
+	if (target.is_short) {
+		buxn_jit_jump_abs(ctx, target);
+	} else {
+		if (target.semantics & BUXN_JIT_SEM_BOOLEAN) {
+			struct sljit_jump* skip_next_opcode = sljit_emit_cmp(
+				ctx->compiler,
+				SLJIT_NOT_EQUAL,
+				target.reg, 0,
+				SLJIT_IMM, 0
+			);
+			buxn_jit_current_opcode(ctx);
+			ctx->pc += 1;
+			sljit_set_label(skip_next_opcode, sljit_emit_label(ctx->compiler));
+		} else {
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_S8,
+				target.reg, 0,
+				target.reg, 0
+			);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_ADD,
+				target.reg, 0,
+				target.reg, 0,
+				SLJIT_IMM, ctx->pc
+			);
+			target.const_value = (uint16_t)((int32_t)ctx->pc + (int32_t)(int8_t)target.const_value);
+
+			buxn_jit_jump_abs(ctx, target);
+		}
+	}
+}
+
+static void
+buxn_jit_conditional_jump(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_operand_t condition,
+	buxn_jit_operand_t target
+) {
+	struct sljit_jump* skip_jump = sljit_emit_cmp(
+		ctx->compiler,
+		SLJIT_EQUAL,
+		condition.reg, 0,
+		SLJIT_IMM, 0
+	);
+	buxn_jit_jump(ctx, target);
+	sljit_set_label(skip_jump, sljit_emit_label(ctx->compiler));
+}
+
+static void
+buxn_jit_finalize(buxn_jit_ctx_t* ctx) {
+	ctx->block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
+	ctx->block->body_addr = sljit_get_label_addr(ctx->body_label);
+	ctx->block->executable_offset = sljit_get_executable_offset(ctx->compiler);
+	ctx->compiler = NULL;
+}
+
+static buxn_jit_operand_t
+buxn_jit_immediate(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool is_short) {
+	buxn_jit_operand_t imm = {
+		// We will assume that it is a constant, even if it can be overwritten.
+		// Jump opcodes will recheck the assumption so it is safe.
+		.semantics = BUXN_JIT_SEM_CONST,
+		.is_short = is_short,
+		.reg = reg,
+	};
+
+	if (is_short) {
+		uint8_t hi = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 0)];
+		uint8_t lo = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 1)];
+		imm.const_value = (uint16_t)hi << 8 | (uint16_t)lo;
+
+		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, ctx->pc
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			imm.reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SHL,
+			imm.reg, 0,
+			imm.reg, 0,
+			SLJIT_IMM, 8
+		);
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, ctx->pc + 1
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_TMP(), 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_OR,
+			imm.reg, 0,
+			imm.reg, 0,
+			BUXN_JIT_TMP(), 0
+		);
+
+		ctx->pc += 2;
+	} else {
+		imm.const_value = ctx->jit->vm->memory[ctx->pc];
+
+		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U16,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			SLJIT_IMM, ctx->pc
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			imm.reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+
+		ctx->pc += 1;
+	}
+
+	return imm;
+}
+
+static buxn_jit_operand_t
+buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+	buxn_jit_operand_t target = buxn_jit_immediate(ctx, reg, true);
+
+	target.const_value += ctx->pc;
+
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_ADD,
+		target.reg, 0,
+		target.reg, 0,
+		SLJIT_IMM, ctx->pc
+	);
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_AND,
+		target.reg, 0,
+		target.reg, 0,
+		SLJIT_IMM, 0xffff
+	);
+
+	return target;
+}
+
 // }}}
 
 // Opcodes {{{
@@ -582,9 +841,7 @@ static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
 	buxn_jit_save_state(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
-	ctx->block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
-	sljit_free_compiler(ctx->compiler);
-	ctx->compiler = NULL;
+	buxn_jit_finalize(ctx);
 }
 
 static void
@@ -660,7 +917,6 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
 
 	buxn_jit_operand_t c = {
-		.is_short = b.is_short,
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
@@ -686,7 +942,6 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
 
 	buxn_jit_operand_t c = {
-		.is_short = b.is_short,
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
@@ -712,7 +967,6 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
 
 	buxn_jit_operand_t c = {
-		.is_short = b.is_short,
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
@@ -738,7 +992,6 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
 
 	buxn_jit_operand_t c = {
-		.is_short = b.is_short,
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
 		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
@@ -760,14 +1013,35 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_JMP(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_jump(ctx, target);
+	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_JCN(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_B), false, buxn_jit_op_flag_r(ctx));
+
+	buxn_jit_conditional_jump(ctx, condition, target);
 }
 
 static void
 buxn_jit_JSR(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t pc = {
+		.is_short = true,
+		.reg = SLJIT_R(BUXN_JIT_R_OP_B),
+	};
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_U16,
+		pc.reg, 0,
+		SLJIT_IMM, ctx->pc
+	);
+	buxn_jit_push_ex(ctx, pc, !buxn_jit_op_flag_r(ctx));
+	buxn_jit_jump(ctx, target);
+	buxn_jit_finalize(ctx);
 }
 
 static void
@@ -1254,106 +1528,58 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_conditional_jump(ctx, condition, target);
 }
 
 static void
 buxn_jit_JMI(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_jump(ctx, target);
+	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t pc = {
+		.is_short = true,
+		.reg = SLJIT_R(BUXN_JIT_R_OP_B),
+	};
+	sljit_emit_op1(
+		ctx->compiler,
+		SLJIT_MOV_U16,
+		pc.reg, 0,
+		SLJIT_IMM, ctx->pc
+	);
+	buxn_jit_push_ex(ctx, pc, true);
+	buxn_jit_jump(ctx, target);
+	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t lit = {
-		// We will assume that it is a constant, even if it can be overwritten.
-		// Jump opcodes will recheck the assumption so it is safe.
-		.semantics = BUXN_JIT_SEM_CONST,
-		.is_short = buxn_jit_op_flag_2(ctx),
-		.reg = SLJIT_R(BUXN_JIT_R_OP_A),
-	};
-
-	if (buxn_jit_op_flag_2(ctx)) {
-		uint8_t hi = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 0)];
-		uint8_t lo = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 1)];
-		lit.const_value = (uint16_t)hi << 8 | (uint16_t)lo;
-
-		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
-
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U16,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			SLJIT_IMM, ctx->pc
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			lit.reg, 0,
-			BUXN_JIT_MEM(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SHL,
-			lit.reg, 0,
-			lit.reg, 0,
-			SLJIT_IMM, 8
-		);
-
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U16,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			SLJIT_IMM, ctx->pc + 1
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_TMP(), 0,
-			BUXN_JIT_MEM(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_OR,
-			lit.reg, 0,
-			lit.reg, 0,
-			BUXN_JIT_TMP(), 0
-		);
-
-		ctx->pc += 2;
-	} else {
-		lit.const_value = ctx->jit->vm->memory[ctx->pc];
-
-		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U16,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			SLJIT_IMM, ctx->pc
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			lit.reg, 0,
-			BUXN_JIT_MEM(), 0
-		);
-
-		ctx->pc += 1;
-	}
-
+	buxn_jit_operand_t lit = buxn_jit_immediate(ctx, SLJIT_R(BUXN_JIT_R_OP_A), buxn_jit_op_flag_2(ctx));
 	buxn_jit_push(ctx, lit);
 }
 
 // }}}
 
 static void
-buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
+buxn_jit_current_opcode(buxn_jit_ctx_t* ctx) {
+	switch (ctx->current_opcode) {
+		BUXN_OPCODE_DISPATCH(BUXN_JIT_DISPATCH)
+	}
+}
+
+static void
+buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 	buxn_jit_ctx_t ctx = {
-		.compiler = sljit_create_compiler(NULL),
 		.jit = jit,
-		.pc = pc,
-		.block = block,
+		.pc = entry->pc,
+		.block = entry->block,
+		.compiler = entry->compiler,
 	};
 
 	/*sljit_compiler_verbose(ctx.compiler, stderr);*/
@@ -1366,13 +1592,15 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
 		0
 	);
 	buxn_jit_load_state(&ctx);
+	ctx.body_label = sljit_emit_label(ctx.compiler);
 
 	uint8_t shadow_wsp;
 	uint8_t shadow_rsp;
 	while (ctx.compiler != NULL) {
 		if (ctx.pc < 256) {
-			sljit_free_compiler(ctx.compiler);
-			ctx.compiler = NULL;
+			buxn_jit_save_state(&ctx);
+			sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_IMM, ctx.pc);
+			buxn_jit_finalize(&ctx);
 			break;
 		}
 
@@ -1422,8 +1650,32 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc, buxn_jit_block_t* block) {
 			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_RSP);
 		}
 
-		switch (ctx.current_opcode) {
-			BUXN_OPCODE_DISPATCH(BUXN_JIT_DISPATCH)
-		}
+		buxn_jit_current_opcode(&ctx);
 	}
+}
+
+static buxn_jit_block_t*
+buxn_jit(buxn_jit_t* jit, uint16_t pc) {
+	buxn_jit_block_t* block = buxn_jit_queue_block(jit, pc);
+
+	buxn_jit_entry_t* entry;
+
+	while ((entry = buxn_jit_dequeue(&jit->compile_queue)) != NULL) {
+		buxn_jit_compile(jit, entry);
+		buxn_jit_enqueue(&jit->entry_pool, entry);
+	}
+
+	while ((entry = buxn_jit_dequeue(&jit->link_queue)) != NULL) {
+		if (entry->block->body_addr != 0) {
+			sljit_set_jump_addr(
+				sljit_get_jump_addr(entry->jump),
+				entry->block->body_addr,
+				entry->block->executable_offset
+			);
+		}
+
+		buxn_jit_enqueue(&jit->entry_pool, entry);
+	}
+
+	return block;
 }
