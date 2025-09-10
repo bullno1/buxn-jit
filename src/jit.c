@@ -1018,8 +1018,7 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_NIP(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
-	(void)a;
+	buxn_jit_POP(ctx);
 	buxn_jit_push(ctx, b);
 }
 
