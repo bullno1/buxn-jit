@@ -1675,7 +1675,7 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 		condition = (buxn_jit_operand_t){
 			.semantics = ctx->top_wst.semantics,
 			.const_value = ctx->top_wst.const_value,
-			.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+			.reg = SLJIT_R(BUXN_JIT_R_OP_A),
 		};
 
 		if (
@@ -1702,7 +1702,7 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 			SLJIT_IMM, 1
 		);
 	} else {
-		condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_C), false, false);
+		condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
 	}
 
 	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
