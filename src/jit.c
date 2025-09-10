@@ -822,45 +822,68 @@ buxn_jit_immediate(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool is_short) {
 
 		buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
 
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U16,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			SLJIT_IMM, ctx->pc
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			imm.reg, 0,
-			BUXN_JIT_MEM(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SHL,
-			imm.reg, 0,
-			imm.reg, 0,
-			SLJIT_IMM, 8
-		);
+		if (ctx->pc < 0xffff) {  // No wrap around
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U16,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				SLJIT_IMM, ctx->pc
+			);
+			sljit_emit_mem(
+				ctx->compiler,
+				SLJIT_MOV_U16 | SLJIT_MEM_LOAD | SLJIT_MEM_UNALIGNED,
+				imm.reg,
+				BUXN_JIT_MEM(), 0
+			);
+#if SLJIT_LITTLE_ENDIAN
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_REV_U16,
+				imm.reg, 0,
+				imm.reg, 0
+			);
+#endif
+		} else {
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U16,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				SLJIT_IMM, ctx->pc
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				imm.reg, 0,
+				BUXN_JIT_MEM(), 0
+			);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SHL,
+				imm.reg, 0,
+				imm.reg, 0,
+				SLJIT_IMM, 8
+			);
 
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U16,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			SLJIT_IMM, ctx->pc + 1
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_TMP(), 0,
-			BUXN_JIT_MEM(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_OR,
-			imm.reg, 0,
-			imm.reg, 0,
-			BUXN_JIT_TMP(), 0
-		);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U16,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				SLJIT_IMM, ctx->pc + 1
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				BUXN_JIT_TMP(), 0,
+				BUXN_JIT_MEM(), 0
+			);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_OR,
+				imm.reg, 0,
+				imm.reg, 0,
+				BUXN_JIT_TMP(), 0
+			);
+		}
 
 		ctx->pc += 2;
 	} else {
