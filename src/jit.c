@@ -1661,14 +1661,22 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 		condition = (buxn_jit_operand_t){
 			.semantics = ctx->top_wst.semantics,
 			.const_value = ctx->top_wst.const_value,
-			.reg = SLJIT_R(BUXN_JIT_R_OP_A),
+			.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 		};
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			condition.reg, 0,
-			ctx->top_wst.reg, 0
-		);
+
+		if (
+			ctx->top_wst.reg != condition.reg
+			||
+			ctx->top_wst.is_short
+		) {
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				condition.reg, 0,
+				ctx->top_wst.reg, 0
+			);
+		}
+
 		ctx->top_wst.reg = 0;
 
 		sljit_emit_op2(
@@ -1679,7 +1687,7 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 			SLJIT_IMM, 1
 		);
 	} else {
-		condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
+		condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_C), false, false);
 	}
 
 	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
