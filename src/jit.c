@@ -938,9 +938,21 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 static void
 buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
 	// If a boolean op is executed right before a JCI, do not push the result
-	// and just immediately use it
+	// and just immediately use it.
+	// This optimization is very sensitive:
+	//
+	// * operand must not be assigned to BUXN_JIT_R_OP_B
+	// * operand must not be the result of an operation that might overflow
 	uint8_t next_opcode = ctx->jit->vm->memory[ctx->pc];
-	if (next_opcode == 0x20 /* JCI */ && !buxn_jit_op_flag_r(ctx)) {
+	if (
+		!operand.is_short
+		&&
+		operand.reg != SLJIT_R(BUXN_JIT_R_OP_B)
+		&&
+		next_opcode == 0x20 /* JCI */
+		&&
+		!buxn_jit_op_flag_r(ctx)
+	) {
 		++ctx->pc;
 		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
 		buxn_jit_conditional_jump(ctx, operand, target);
@@ -1186,8 +1198,8 @@ buxn_jit_STH(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_LDZ(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
-	buxn_jit_push(ctx, value);
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
@@ -1214,8 +1226,8 @@ buxn_jit_LDR(buxn_jit_ctx_t* ctx) {
 		SLJIT_IMM, ctx->pc
 	);
 	addr.is_short = true;
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
-	buxn_jit_push(ctx, value);
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
@@ -1242,8 +1254,8 @@ buxn_jit_STR(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_LDA(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), true, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_B), addr);
-	buxn_jit_push(ctx, value);
+	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
@@ -1270,7 +1282,7 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
 	buxn_jit_operand_t result = {
 		.is_short = buxn_jit_op_flag_2(ctx),
-		.reg = SLJIT_R(BUXN_JIT_R_OP_B),
+		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
 	};
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
@@ -1301,7 +1313,7 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		SLJIT_R0, 0
 	);
 	buxn_jit_load_state(ctx);
-	buxn_jit_push(ctx, result);
+	buxn_jit_maybe_JCI(ctx, result);
 }
 
 static void
@@ -1563,7 +1575,7 @@ buxn_jit_AND(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
@@ -1587,7 +1599,7 @@ buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
@@ -1611,7 +1623,7 @@ buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
