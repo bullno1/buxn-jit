@@ -943,6 +943,20 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 	return target;
 }
 
+static void
+buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
+	// If a boolean op is executed right before a JCI, do not push the result
+	// and just immediately use it
+	uint8_t next_opcode = ctx->jit->vm->memory[ctx->pc];
+	if (next_opcode == 0x20 /* JCI */ && !buxn_jit_op_flag_r(ctx)) {
+		++ctx->pc;
+		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+		buxn_jit_conditional_jump(ctx, operand, target);
+	} else {
+		buxn_jit_push(ctx, operand);
+	}
+}
+
 // }}}
 
 // Opcodes {{{
@@ -1062,7 +1076,7 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 		SLJIT_EQUAL
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
@@ -1087,7 +1101,7 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 		SLJIT_NOT_EQUAL
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
@@ -1112,7 +1126,7 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_GREATER
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
@@ -1137,7 +1151,7 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_LESS
 	);
 
-	buxn_jit_push(ctx, c);
+	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
