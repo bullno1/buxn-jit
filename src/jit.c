@@ -40,8 +40,10 @@ enum {
 
 #undef BUXN_OPCODE_NAME
 #define BUXN_OPCODE_NAME(NAME, K, R, S) NAME
+#define BUXN_STRINGIFY(X) BUXN_STRINGIFY2(X)
+#define BUXN_STRINGIFY2(X) #X
 #define BUXN_JIT_DISPATCH(NAME, VALUE) \
-	case VALUE: BUXN_CONCAT(buxn_jit_, NAME)(ctx); break;
+	case VALUE: { /*printf("  ; " BUXN_STRINGIFY2(NAME) "\n");*/ BUXN_CONCAT(buxn_jit_, NAME)(ctx); } break;
 
 typedef sljit_u32 (*buxn_jit_fn_t)(sljit_up vm);
 
@@ -1678,18 +1680,14 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 			.reg = SLJIT_R(BUXN_JIT_R_OP_A),
 		};
 
-		if (
-			ctx->top_wst.reg != condition.reg
-			||
-			ctx->top_wst.is_short
-		) {
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				condition.reg, 0,
-				ctx->top_wst.reg, 0
-			);
-		}
+		// Due to overflow, this cannot be avoided even if it's the same
+		// register
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			condition.reg, 0,
+			ctx->top_wst.reg, 0
+		);
 
 		ctx->top_wst.reg = 0;
 		ctx->wsp -= 1;
