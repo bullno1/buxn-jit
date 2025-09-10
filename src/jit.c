@@ -942,7 +942,19 @@ buxn_jit_INC(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_POP(buxn_jit_ctx_t* ctx) {
-	buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	if (buxn_jit_op_flag_k(ctx)) { return; }  // POPk is nop
+
+	buxn_jit_reg_t stack_ptr_reg = buxn_jit_op_flag_r(ctx)
+		? SLJIT_S(BUXN_JIT_S_RSP)
+		: SLJIT_S(BUXN_JIT_S_WSP);
+
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_SUB,
+		stack_ptr_reg, 0,
+		stack_ptr_reg, 0,
+		SLJIT_IMM, buxn_jit_op_flag_2(ctx) ? 2 : 1
+	);
 }
 
 static void
