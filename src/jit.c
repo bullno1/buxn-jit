@@ -19,6 +19,8 @@
 
 enum {
 	BUXN_JIT_S_VM = 0,
+	BUXN_JIT_S_WSP,
+	BUXN_JIT_S_RSP,
 
 	BUXN_JIT_S_COUNT,
 };
@@ -26,8 +28,6 @@ enum {
 enum {
 	BUXN_JIT_R_MEM_BASE = 0,
 	BUXN_JIT_R_MEM_OFFSET,
-	BUXN_JIT_R_WSP,
-	BUXN_JIT_R_RSP,
 	BUXN_JIT_R_SWSP,
 	BUXN_JIT_R_SRSP,
 	BUXN_JIT_R_OP_A,
@@ -396,7 +396,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
 
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
-	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_R(BUXN_JIT_R_RSP) : SLJIT_R(BUXN_JIT_R_WSP);
+	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_S(BUXN_JIT_S_RSP) : SLJIT_S(BUXN_JIT_S_WSP);
 
 	if (operand.is_short) {
 		buxn_jit_value_t* hi = &stack[(*stack_ptr)++];
@@ -634,13 +634,13 @@ buxn_jit_load_state(buxn_jit_ctx_t* ctx) {
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_U8,
-		SLJIT_R(BUXN_JIT_R_WSP), 0,
+		SLJIT_S(BUXN_JIT_S_WSP), 0,
 		SLJIT_MEM1(SLJIT_S(BUXN_JIT_S_VM)), SLJIT_OFFSETOF(buxn_vm_t, wsp)
 	);
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_U8,
-		SLJIT_R(BUXN_JIT_R_RSP), 0,
+		SLJIT_S(BUXN_JIT_S_RSP), 0,
 		SLJIT_MEM1(SLJIT_S(BUXN_JIT_S_VM)), SLJIT_OFFSETOF(buxn_vm_t, rsp)
 	);
 }
@@ -651,13 +651,13 @@ buxn_jit_save_state(buxn_jit_ctx_t* ctx) {
 		ctx->compiler,
 		SLJIT_MOV_U8,
 		SLJIT_MEM1(SLJIT_S(BUXN_JIT_S_VM)), SLJIT_OFFSETOF(buxn_vm_t, wsp),
-		SLJIT_R(BUXN_JIT_R_WSP), 0
+		SLJIT_S(BUXN_JIT_S_WSP), 0
 	);
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_U8,
 		SLJIT_MEM1(SLJIT_S(BUXN_JIT_S_VM)), SLJIT_OFFSETOF(buxn_vm_t, rsp),
-		SLJIT_R(BUXN_JIT_R_RSP), 0
+		SLJIT_S(BUXN_JIT_S_RSP), 0
 	);
 }
 
@@ -695,18 +695,11 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				SLJIT_IMM, target.const_value
 			);
 
-			buxn_jit_save_state(ctx);
 			ctx->mem_base = 0;
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV,
-				SLJIT_R0, 0,
-				SLJIT_S(BUXN_JIT_S_VM), 0
-			);
 			struct sljit_jump* call = sljit_emit_call(
 				ctx->compiler,
-				SLJIT_CALL | SLJIT_REWRITABLE_JUMP,
-				SLJIT_ARGS1(32, P)
+				SLJIT_CALL_REG_ARG | SLJIT_REWRITABLE_JUMP,
+				SLJIT_ARGS0(32)
 			);
 
 			// If the return address is not as expected, trampoline
@@ -722,8 +715,8 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 			sljit_set_label(call, sljit_emit_label(ctx->compiler));
 			sljit_emit_enter(
 				ctx->compiler,
-				0,
-				SLJIT_ARGS1(32, P),
+				SLJIT_ENTER_KEEP(BUXN_JIT_S_COUNT) | SLJIT_ENTER_REG_ARG,
+				SLJIT_ARGS0(32),
 				BUXN_JIT_R_COUNT,
 				BUXN_JIT_S_COUNT,
 				0
@@ -742,12 +735,10 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 
 	// Return to trampoline.
 	// This is always correct but slow.
-	buxn_jit_save_state(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, target.reg, 0);
 
 	if (exit != NULL) {
 		sljit_set_label(exit, sljit_emit_label(ctx->compiler));
-		buxn_jit_load_state(ctx);
 	}
 }
 
@@ -925,7 +916,6 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 
 static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
-	buxn_jit_save_state(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
 	buxn_jit_finalize(ctx);
 }
@@ -1667,7 +1657,8 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 	};
 
 	/*sljit_compiler_verbose(ctx.compiler, stderr);*/
-	ctx.head_label = sljit_emit_label(ctx.compiler);
+
+	// C-compatible prologue
 	sljit_emit_enter(
 		ctx.compiler,
 		0,
@@ -1677,13 +1668,31 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 		0
 	);
 	buxn_jit_load_state(&ctx);
+	struct sljit_jump* call = sljit_emit_call(
+		ctx.compiler,
+		SLJIT_CALL_REG_ARG,
+		SLJIT_ARGS0(32)
+	);
+	buxn_jit_save_state(&ctx);
+	sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_R0, 0);
+
+	// sljit-specific fast calling convention
+	ctx.head_label = sljit_emit_label(ctx.compiler);
+	sljit_set_label(call, ctx.head_label);
+	sljit_emit_enter(
+		ctx.compiler,
+		SLJIT_ENTER_KEEP(BUXN_JIT_S_COUNT) | SLJIT_ENTER_REG_ARG,
+		SLJIT_ARGS0(32),
+		BUXN_JIT_R_COUNT,
+		BUXN_JIT_S_COUNT,
+		0
+	);
 	ctx.body_label = sljit_emit_label(ctx.compiler);
 
 	uint8_t shadow_wsp;
 	uint8_t shadow_rsp;
 	while (ctx.compiler != NULL) {
 		if (ctx.pc < 256) {
-			buxn_jit_save_state(&ctx);
 			sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_IMM, ctx.pc);
 			buxn_jit_finalize(&ctx);
 			break;
@@ -1717,13 +1726,13 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 				ctx.compiler,
 				SLJIT_MOV_U8,
 				SLJIT_R(BUXN_JIT_R_SWSP), 0,
-				SLJIT_R(BUXN_JIT_R_WSP), 0
+				SLJIT_S(BUXN_JIT_S_WSP), 0
 			);
 			sljit_emit_op1(
 				ctx.compiler,
 				SLJIT_MOV_U8,
 				SLJIT_R(BUXN_JIT_R_SRSP), 0,
-				SLJIT_R(BUXN_JIT_R_RSP), 0
+				SLJIT_S(BUXN_JIT_S_RSP), 0
 			);
 			ctx.wsp_reg = SLJIT_R(BUXN_JIT_R_SWSP);
 			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_SRSP);
@@ -1731,8 +1740,8 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 			ctx.ewsp = &ctx.wsp;
 			ctx.ersp = &ctx.rsp;
 
-			ctx.wsp_reg = SLJIT_R(BUXN_JIT_R_WSP);
-			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_RSP);
+			ctx.wsp_reg = SLJIT_S(BUXN_JIT_S_WSP);
+			ctx.rsp_reg = SLJIT_S(BUXN_JIT_S_RSP);
 		}
 
 		buxn_jit_current_opcode(&ctx);
