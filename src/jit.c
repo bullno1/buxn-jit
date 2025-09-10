@@ -1692,6 +1692,7 @@ buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 		}
 
 		ctx->top_wst.reg = 0;
+		ctx->wsp -= 1;
 
 		sljit_emit_op2(
 			ctx->compiler,
