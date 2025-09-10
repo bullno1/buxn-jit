@@ -133,8 +133,6 @@ typedef struct {
 	uint8_t* ersp;
 	buxn_jit_reg_t wsp_reg;
 	buxn_jit_reg_t rsp_reg;
-
-	buxn_jit_operand_t top_wst;
 } buxn_jit_ctx_t;
 
 // https://nullprogram.com/blog/2018/07/31/
@@ -293,10 +291,6 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? ctx->ersp : ctx->ewsp;
 
-	if (!flag_r) {
-		ctx->top_wst.reg = 0;
-	}
-
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
 	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
 
@@ -402,10 +396,6 @@ static void
 buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
-
-	if (!flag_r) {
-		ctx->top_wst = operand;
-	}
 
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
 	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_S(BUXN_JIT_S_RSP) : SLJIT_S(BUXN_JIT_S_WSP);
@@ -998,7 +988,6 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 		ctx->rsp -= size;
 	} else {
 		ctx->wsp -= size;
-		ctx->top_wst.reg = 0;
 	}
 
 	buxn_jit_reg_t stack_ptr_reg = buxn_jit_op_flag_r(ctx)
@@ -1672,37 +1661,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t condition;
-	if (ctx->top_wst.reg != 0) {  // Avoid popping out the same element that was pushed
-		condition = (buxn_jit_operand_t){
-			.semantics = ctx->top_wst.semantics,
-			.const_value = ctx->top_wst.const_value,
-			.reg = SLJIT_R(BUXN_JIT_R_OP_A),
-		};
-
-		// Due to overflow, this cannot be avoided even if it's the same
-		// register
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			condition.reg, 0,
-			ctx->top_wst.reg, 0
-		);
-
-		ctx->top_wst.reg = 0;
-		ctx->wsp -= 1;
-
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SUB,
-			SLJIT_S(BUXN_JIT_S_WSP), 0,
-			SLJIT_S(BUXN_JIT_S_WSP), 0,
-			SLJIT_IMM, 1
-		);
-	} else {
-		condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
-	}
-
+	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
 	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
 	buxn_jit_conditional_jump(ctx, condition, target);
 }
