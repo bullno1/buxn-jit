@@ -218,11 +218,16 @@ buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
 	return 0;
 }
 
-static void
-buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+static uint8_t
+buxn_jit_reg_mask(buxn_jit_reg_t reg) {
 	int reg_no = reg - SLJIT_R0;
 	BUXN_JIT_ASSERT(BUXN_JIT_R_OP_MIN <= reg_no && reg_no <= BUXN_JIT_R_OP_MAX, "Invalid register");
-	uint8_t mask = 1 << (reg_no - BUXN_JIT_R_OP_MIN);
+	return (uint8_t)1 << (reg_no - BUXN_JIT_R_OP_MIN);
+}
+
+static void
+buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+	uint8_t mask = buxn_jit_reg_mask(reg);
 	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
 	ctx->used_registers &= ~mask;
 }
@@ -444,6 +449,11 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 
 static void
 buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
+	BUXN_JIT_ASSERT(
+		ctx->used_registers & buxn_jit_reg_mask(operand.reg),
+		"Pushing operand with unused register"
+	);
+
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
 
