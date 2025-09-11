@@ -632,6 +632,62 @@ buxn_jit_stack_cache_pop(
 }
 
 static void
+buxn_jit_discard_from_mem(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
+	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_SUB,
+		stack_ptr_reg, 0,
+		stack_ptr_reg, 0,
+		SLJIT_IMM, flag_2 ? 2 : 1
+	);
+}
+
+static void
+buxn_jit_stack_cache_discard(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t*  cache,
+	bool flag_2
+) {
+	bool flag_r = cache == &ctx->rst_cache;
+	if (flag_2) {
+		if (cache->len == 0) {
+			// There is nothing in the cache, discard from memory
+			buxn_jit_discard_from_mem(ctx, flag_2, flag_r);
+		} else {
+			// Discard the top value
+			buxn_jit_stack_cache_cell_t* top = &cache->cells[--cache->len];
+			if (!top->value.is_short) {
+				// The top value is a byte, discard the next byte
+				buxn_jit_stack_cache_discard(ctx, cache, false);
+			}
+		}
+	} else {
+		if (cache->len == 0) {
+			// There is nothing in the cache, discard from memory
+			buxn_jit_discard_from_mem(ctx, flag_2, flag_r);
+		} else {
+			buxn_jit_stack_cache_cell_t* top = &cache->cells[cache->len - 1];
+
+			if (top->value.is_short) {
+				// The top value is a short, reduce it
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_LSHR,
+					top->value.reg, 0,
+					top->value.reg, 0,
+					SLJIT_IMM, 8
+				);
+				top->value.is_short = false;
+			} else {
+				// The top value is the right size, just drop it
+				cache->len -= 1;
+			}
+		}
+	}
+}
+
+static void
 buxn_jit_do_push(
 	buxn_jit_ctx_t* ctx,
 	buxn_jit_operand_t operand,
@@ -1489,8 +1545,15 @@ static void
 buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 	if (buxn_jit_op_flag_k(ctx)) { return; }  // POPk is nop
 
-	// TODO: make it possible to discard instead of pop
-	buxn_jit_pop(ctx);
+	bool flag_2 = buxn_jit_op_flag_2(ctx);
+	uint8_t size = flag_2 ? 2 : 1;
+	if (buxn_jit_op_flag_r(ctx)) {
+		ctx->rsp -= size;
+		buxn_jit_stack_cache_discard(ctx, &ctx->rst_cache, flag_2);
+	} else {
+		ctx->wsp -= size;
+		buxn_jit_stack_cache_discard(ctx, &ctx->wst_cache, flag_2);
+	}
 }
 
 static void
