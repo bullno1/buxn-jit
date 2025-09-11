@@ -180,7 +180,7 @@ typedef struct {
 	uint8_t* ersp;
 	buxn_jit_reg_t wsp_reg;
 	buxn_jit_reg_t rsp_reg;
-	uint8_t used_registers;
+	uint8_t reg_ref_counts[BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1];
 
 	buxn_jit_stack_cache_t wst_cache;
 	buxn_jit_stack_cache_t rst_cache;
@@ -317,6 +317,12 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 
 // Utils {{{
 
+static bool
+buxn_jit_stack_cache_spill(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t* cache
+);
+
 static inline bool
 buxn_jit_op_flag_2(buxn_jit_ctx_t* ctx) {
 	return ctx->current_opcode & BUXN_JIT_OP_2
@@ -363,15 +369,8 @@ buxn_jit_op_flag_r(buxn_jit_ctx_t* ctx) {
 
 static buxn_jit_reg_t
 buxn_jit_find_free_reg(buxn_jit_ctx_t* ctx) {
-	_Static_assert(
-		sizeof(ctx->used_registers) * CHAR_BIT >= (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1),
-		"buxn_jit_ctx_t::used_registers needs more bits"
-	);
-
 	for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
-		uint8_t mask = 1 << i;
-		if ((ctx->used_registers & mask) == 0) {
-			ctx->used_registers |= mask;
+		if (ctx->reg_ref_counts[i] == 0) {
 			return SLJIT_R(BUXN_JIT_R_OP_MIN + i);
 		}
 	}
@@ -379,16 +378,55 @@ buxn_jit_find_free_reg(buxn_jit_ctx_t* ctx) {
 	return 0;
 }
 
-static bool
-buxn_jit_stack_cache_spill(
-	buxn_jit_ctx_t* ctx,
-	buxn_jit_stack_cache_t* cache
-);
+static void
+buxn_jit_retain_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+	BUXN_JIT_ASSERT(
+		BUXN_JIT_R_OP_MIN <= reg - SLJIT_R0 && reg - SLJIT_R0 <= BUXN_JIT_R_OP_MAX,
+		"Invalid register"
+	);
+	ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)] += 1;
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; retain_reg(r%d) => %d\n",
+		reg - SLJIT_R0,
+		ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)]
+	);
+#endif
+}
+
+static void
+buxn_jit_release_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+	BUXN_JIT_ASSERT(
+		BUXN_JIT_R_OP_MIN <= reg && reg <= BUXN_JIT_R_OP_MAX,
+		"Invalid register"
+	);
+	BUXN_JIT_ASSERT(
+		ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)] > 0,
+		"Releasing unused register"
+	);
+	ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)] -= 1;
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; release_reg(r%d) => %d\n",
+		reg - SLJIT_R0,
+		ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)]
+	);
+	if (ctx->reg_ref_counts[reg - SLJIT_R(BUXN_JIT_R_OP_MIN)] == 0) {
+		fprintf(stderr, "  ; free_reg(r%d)\n", reg - SLJIT_R0);
+	}
+#endif
+}
 
 static buxn_jit_reg_t
 buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
-	buxn_jit_reg_t reg = buxn_jit_find_free_reg(ctx);
-	if (reg == 0) {
+	buxn_jit_reg_t reg;
+	while (
+		(reg  = buxn_jit_find_free_reg(ctx)) == 0
+		&&
+		ctx->wst_cache.len + ctx->rst_cache.len > 0
+	) {
 		// Try to spill from current cache first then opposing cache
 		if (buxn_jit_op_flag_r(ctx)) {
 			if (!buxn_jit_stack_cache_spill(ctx, &ctx->rst_cache)) {
@@ -399,32 +437,14 @@ buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
 				buxn_jit_stack_cache_spill(ctx, &ctx->rst_cache);
 			}
 		}
-		reg = buxn_jit_find_free_reg(ctx);
 	}
 	BUXN_JIT_ASSERT(reg != 0, "Out of registers");
-
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; alloc_reg() => r%d\n", reg - SLJIT_R0);
 #endif
+	buxn_jit_retain_reg(ctx, reg);
 
 	return reg;
-}
-
-static uint8_t
-buxn_jit_reg_mask(buxn_jit_reg_t reg) {
-	int reg_no = reg - SLJIT_R0;
-	BUXN_JIT_ASSERT(BUXN_JIT_R_OP_MIN <= reg_no && reg_no <= BUXN_JIT_R_OP_MAX, "Invalid register");
-	return (uint8_t)1 << (reg_no - BUXN_JIT_R_OP_MIN);
-}
-
-static void
-buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
-#if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; free_reg(r%d)\n", reg - SLJIT_R0);
-#endif
-	uint8_t mask = buxn_jit_reg_mask(reg);
-	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
-	ctx->used_registers &= ~mask;
 }
 
 // }}}
@@ -447,6 +467,7 @@ buxn_jit_stack_cache_push(
 	buxn_jit_stack_cache_cell_t* cell = &cache->cells[cache->len++];
 	cell->value = value;
 	cell->need_flush = true;
+	buxn_jit_retain_reg(ctx, value.reg);
 }
 
 static buxn_jit_reg_t
@@ -576,7 +597,7 @@ buxn_jit_stack_cache_pop(
 					hi, 0,
 					top->value.reg, 0
 				);
-				buxn_jit_free_reg(ctx, top->value.reg);
+				buxn_jit_release_reg(ctx, top->value.reg);
 				return hi;
 			}
 		}
@@ -595,7 +616,7 @@ buxn_jit_stack_cache_pop(
 				// Allocating a register could force a spill
 				if (cache->len == 0) {
 					// Try to pop from memory instead
-					buxn_jit_free_reg(ctx, reg);
+					buxn_jit_release_reg(ctx, reg);
 					return buxn_jit_pop_from_mem(ctx, flag_2, flag_r);
 				} else {
 					// Actually try to split the top value
@@ -657,6 +678,7 @@ buxn_jit_stack_cache_discard(
 		} else {
 			// Discard the top value
 			buxn_jit_stack_cache_cell_t* top = &cache->cells[--cache->len];
+			buxn_jit_release_reg(ctx, top->value.reg);
 			if (!top->value.is_short) {
 				// The top value is a byte, discard the next byte
 				buxn_jit_stack_cache_discard(ctx, cache, false);
@@ -680,8 +702,9 @@ buxn_jit_stack_cache_discard(
 				);
 				top->value.is_short = false;
 			} else {
-				// The top value is the right size, just drop it
+				// The top value is the right size, just discard it
 				cache->len -= 1;
+				buxn_jit_release_reg(ctx, top->value.reg);
 			}
 		}
 	}
@@ -813,7 +836,7 @@ buxn_jit_stack_cache_spill(
 	if (cell->need_flush) {
 		buxn_jit_flush_cell(ctx, cell, flag_r);
 	}
-	buxn_jit_free_reg(ctx, cell->value.reg);
+	buxn_jit_release_reg(ctx, cell->value.reg);
 
 	cache->len -= 1;
 	memmove(
@@ -870,7 +893,7 @@ buxn_jit_stack_cache_retain(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) 
 
 	for (uint8_t i = 0; i < cache->len; ++i) {
 		buxn_jit_stack_cache_cell_t* cell = &cache->cells[i];
-		ctx->used_registers |= buxn_jit_reg_mask(cell->value.reg);
+		buxn_jit_retain_reg(ctx, cell->value.reg);
 	}
 }
 
@@ -905,7 +928,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 #endif
 
 	BUXN_JIT_ASSERT(
-		ctx->used_registers & buxn_jit_reg_mask(operand.reg),
+		ctx->reg_ref_counts[operand.reg - SLJIT_R(BUXN_JIT_R_OP_MIN)],
 		"Pushing operand with unused register"
 	);
 
@@ -2372,33 +2395,37 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 		return;
 	}
 
-	ctx->used_registers = 0;
+	memset(ctx->reg_ref_counts, 0, sizeof(ctx->reg_ref_counts));
 	buxn_jit_stack_cache_retain(ctx, &ctx->wst_cache);
 	buxn_jit_stack_cache_retain(ctx, &ctx->rst_cache);
 #if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; WST:");
-	for (uint8_t i = 0; i < ctx->wst_cache.len; ++i) {
-		buxn_jit_stack_cache_cell_t* cell = &ctx->wst_cache.cells[i];
-		fprintf(
-			stderr,
-			" r%d%s",
-			cell->value.reg - SLJIT_R0,
-			cell->value.is_short ? "*" : ""
-		);
+	if (ctx->wst_cache.len > 0) {
+		fprintf(stderr, "  ; WST:");
+		for (uint8_t i = 0; i < ctx->wst_cache.len; ++i) {
+			buxn_jit_stack_cache_cell_t* cell = &ctx->wst_cache.cells[i];
+			fprintf(
+				stderr,
+				" r%d%s",
+				cell->value.reg - SLJIT_R0,
+				cell->value.is_short ? "*" : ""
+			);
+		}
+		fprintf(stderr, "\n");
 	}
-	fprintf(stderr, "\n");
 
-	fprintf(stderr, "  ; RST:");
-	for (uint8_t i = 0; i < ctx->rst_cache.len; ++i) {
-		buxn_jit_stack_cache_cell_t* cell = &ctx->rst_cache.cells[i];
-		fprintf(
-			stderr,
-			" r%d%s",
-			cell->value.reg - SLJIT_R0,
-			cell->value.is_short ? "*" : ""
-		);
+	if (ctx->rst_cache.len > 0) {
+		fprintf(stderr, "  ; RST:");
+		for (uint8_t i = 0; i < ctx->rst_cache.len; ++i) {
+			buxn_jit_stack_cache_cell_t* cell = &ctx->rst_cache.cells[i];
+			fprintf(
+				stderr,
+				" r%d%s",
+				cell->value.reg - SLJIT_R0,
+				cell->value.is_short ? "*" : ""
+			);
+		}
+		fprintf(stderr, "\n");
 	}
-	fprintf(stderr, "\n");
 #endif
 
 	uint8_t shadow_wsp;
