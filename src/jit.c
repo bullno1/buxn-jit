@@ -821,7 +821,6 @@ buxn_jit_load(
 		);
 	}
 
-	buxn_jit_free_reg(ctx, addr.reg);
 	return result;
 }
 
@@ -899,9 +898,6 @@ buxn_jit_store(
 			value.reg, 0
 		);
 	}
-
-	buxn_jit_free_reg(ctx, addr.reg);
-	buxn_jit_free_reg(ctx, value.reg);
 }
 
 static void
@@ -1104,8 +1100,6 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 			buxn_jit_jump_abs(ctx, target, return_addr);
 		}
 	}
-
-	buxn_jit_free_reg(ctx, target.reg);
 }
 
 static void
@@ -1122,7 +1116,6 @@ buxn_jit_conditional_jump(
 		condition.reg, 0,
 		SLJIT_IMM, 0xff
 	);
-	buxn_jit_free_reg(ctx, condition.reg);
 
 	struct sljit_jump* skip_jump = sljit_emit_jump(ctx->compiler, SLJIT_ZERO);
 #if BUXN_JIT_VERBOSE
@@ -1406,8 +1399,6 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 		SLJIT_EQUAL
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1433,8 +1424,6 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 		SLJIT_NOT_EQUAL
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1460,8 +1449,6 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_GREATER
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1487,8 +1474,6 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_LESS
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1635,7 +1620,6 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		SLJIT_R1, 0,
 		addr.reg, 0
 	);
-	buxn_jit_free_reg(ctx, addr.reg);
 	sljit_emit_icall(
 		ctx->compiler,
 		SLJIT_CALL,
@@ -1727,7 +1711,6 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 			value.reg, 0
 		);
 	}
-	buxn_jit_free_reg(ctx, value.reg);
 
 	buxn_jit_discard_stack_caches(ctx);
 	buxn_jit_save_state(ctx);
@@ -1744,7 +1727,6 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 		SLJIT_R1, 0,
 		addr.reg, 0
 	);
-	buxn_jit_free_reg(ctx, addr.reg);
 	sljit_emit_icall(
 		ctx->compiler,
 		SLJIT_CALL,
@@ -1777,8 +1759,6 @@ buxn_jit_ADD(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1803,8 +1783,6 @@ buxn_jit_SUB(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1829,8 +1807,6 @@ buxn_jit_MUL(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1914,8 +1890,6 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 #endif
 	sljit_set_label(end, sljit_emit_label(ctx->compiler));
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1940,8 +1914,6 @@ buxn_jit_AND(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1966,8 +1938,6 @@ buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -1992,8 +1962,6 @@ buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
@@ -2039,8 +2007,6 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 		BUXN_JIT_TMP(), 0
 	);
 
-	buxn_jit_free_reg(ctx, a.reg);
-	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
