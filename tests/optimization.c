@@ -82,3 +82,36 @@ BTEST(optimization, inc) {
 	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
 	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
+
+BTEST(optimization, INCk) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#01 INCk"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x01);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0x02);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
+}
+
+BTEST(optimization, ORAk) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0102 ORAk"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 3);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x01);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 0x02);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[2], 0x03);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
+}

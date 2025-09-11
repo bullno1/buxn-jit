@@ -68,13 +68,16 @@ enum {
 		if (BUXN_JIT_VERBOSE) { \
 			fprintf( \
 				stderr, \
-				"  ; " BUXN_STRINGIFY2(NAME) "%s%s%s\n", \
+				"  ; " BUXN_STRINGIFY2(NAME) "%s%s%s {{{\n", \
 				buxn_jit_op_flag_2(ctx) ? "2" : "", \
 				buxn_jit_op_flag_k(ctx) ? "k" : "", \
 				buxn_jit_op_flag_r(ctx) ? "r" : ""  \
 			); \
 		} \
 		BUXN_CONCAT(buxn_jit_, NAME)(ctx); \
+		if (BUXN_JIT_VERBOSE) { \
+			fprintf(stderr, "  ; }}}\n"); \
+		} \
 	} break;
 
 typedef sljit_u32 (*buxn_jit_fn_t)(sljit_up vm);
@@ -348,7 +351,22 @@ buxn_jit_op_flag_2(buxn_jit_ctx_t* ctx) {
 
 static inline bool
 buxn_jit_op_flag_k(buxn_jit_ctx_t* ctx) {
-	return ctx->current_opcode & BUXN_JIT_OP_K;
+	return ctx->current_opcode & BUXN_JIT_OP_K
+		&&
+		ctx->current_opcode != 0x20  // JCI
+		&&
+		ctx->current_opcode != 0x40  // JMI
+		&&
+		ctx->current_opcode != 0x60  // JSI
+		&&
+		ctx->current_opcode != 0x80  // LIT
+		&&
+		ctx->current_opcode != 0xa0  // LIT2
+		&&
+		ctx->current_opcode != 0xc0  // LITr
+		&&
+		ctx->current_opcode != 0xe0  // LIT2r
+		;
 }
 
 static inline bool
@@ -370,10 +388,162 @@ buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base) {
 	}
 }
 
+static void
+buxn_jit_do_push(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_operand_t operand,
+	bool flag_r
+) {
+	buxn_jit_set_mem_base(
+		ctx,
+		flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws)
+	);
+	buxn_jit_reg_t stack_ptr_reg = flag_r
+		? SLJIT_S(BUXN_JIT_S_RSP)
+		: SLJIT_S(BUXN_JIT_S_WSP);
+
+	if (operand.is_short) {
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_LSHR,
+			BUXN_JIT_TMP(), 0,
+			operand.reg, 0,
+			SLJIT_IMM, 8
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			BUXN_JIT_TMP(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
+		);
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_AND,
+			BUXN_JIT_TMP(), 0,
+			operand.reg, 0,
+			SLJIT_IMM, 0xff
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			BUXN_JIT_TMP(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
+		);
+	} else {
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM(), 0,
+			operand.reg, 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
+		);
+	}
+}
+
+static void
+buxn_jit_flush_stack(buxn_jit_ctx_t* ctx, buxn_jit_operand_t* stack) {
+	bool flag_r = stack == &ctx->rst_top;
+	if (stack->reg != 0) {
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; flush %s {{{\n", flag_r ? "RST" : "WST");
+#endif
+		buxn_jit_do_push(ctx, *stack, flag_r);
+		stack->reg = 0;
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; }}}\n");
+#endif
+	}
+}
+
+static void
+buxn_jit_flush_stacks(buxn_jit_ctx_t* ctx) {
+	buxn_jit_flush_stack(ctx, &ctx->wst_top);
+	buxn_jit_flush_stack(ctx, &ctx->rst_top);
+}
+
+static void
+buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; push(reg=r%d, flag_2=%d, flag_r=%d)\n",
+		operand.reg - SLJIT_R0,
+		operand.is_short,
+		flag_r
+	);
+#endif
+
+	BUXN_JIT_ASSERT(
+		ctx->used_registers & buxn_jit_reg_mask(operand.reg),
+		"Pushing operand with unused register"
+	);
+
+	// Defer the entire push operation until it's actually needed
+	buxn_jit_operand_t* deferred_push = flag_r ? &ctx->rst_top : &ctx->wst_top;
+	if (deferred_push->reg != 0) {
+		buxn_jit_flush_stack(ctx, deferred_push);
+	}
+	*deferred_push = operand;
+
+	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
+	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
+
+	if (operand.is_short) {
+		buxn_jit_value_t* hi = &stack[(*stack_ptr)++];
+		buxn_jit_value_t* lo = &stack[(*stack_ptr)++];
+		hi->semantics = lo->semantics = operand.semantics;
+		hi->const_value = operand.const_value >> 8;
+		lo->const_value = operand.const_value & 0xff;
+	} else {
+		buxn_jit_value_t* value = &stack[(*stack_ptr)++];
+		value->semantics = operand.semantics;
+		value->const_value = (uint8_t)operand.const_value;
+	}
+}
+
 static buxn_jit_operand_t
 buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 #if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; pop(flag_2=%d, flag_r=%d)\n", flag_2, flag_r);
+	fprintf(stderr, "  ; pop(flag_2=%d, flag_r=%d) {{{\n", flag_2, flag_r);
 #endif
 
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
@@ -406,18 +576,8 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 
 		if (cached_operand->reg != 0 && cached_operand->is_short) {
 			operand = *cached_operand;
-
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SUB,
-				stack_ptr_reg, 0,
-				stack_ptr_reg, 0,
-				SLJIT_IMM, 2
-			);
 		} else {
-			if (cached_operand->reg != 0) {
-				buxn_jit_free_reg(ctx, cached_operand->reg);
-			}
+			buxn_jit_flush_stack(ctx, cached_operand);
 
 			operand.reg = buxn_jit_alloc_reg(ctx);
 			buxn_jit_set_mem_base(ctx, mem_base);
@@ -483,18 +643,8 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 
 		if (cached_operand->reg != 0 && !cached_operand->is_short) {
 			operand = *cached_operand;
-
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SUB,
-				stack_ptr_reg, 0,
-				stack_ptr_reg, 0,
-				SLJIT_IMM, 1
-			);
 		} else {
-			if (cached_operand->reg != 0) {
-				buxn_jit_free_reg(ctx, cached_operand->reg);
-			}
+			buxn_jit_flush_stack(ctx, cached_operand);
 
 			operand.reg = buxn_jit_alloc_reg(ctx);
 			buxn_jit_set_mem_base(ctx, mem_base);
@@ -523,133 +673,20 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 	cached_operand->reg = 0;
 
 #if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; pop(flag_2=%d, flag_r=%d) => r%d\n", flag_2, flag_r, operand.reg - SLJIT_R0);
+	fprintf(stderr, "  ; }}} => r%d\n", operand.reg - SLJIT_R0);
 #endif
 
 	return operand;
 }
 
 static void
-buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
-	BUXN_JIT_ASSERT(
-		ctx->used_registers & buxn_jit_reg_mask(operand.reg),
-		"Pushing operand with unused register"
-	);
-
-#if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; push(reg=r%d, flag_r=%d)\n", operand.reg - SLJIT_R0, flag_r);
-#endif
-
-	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
-	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
-
-	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
-	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_S(BUXN_JIT_S_RSP) : SLJIT_S(BUXN_JIT_S_WSP);
-
-	if (flag_r) {
-		ctx->rst_top = operand;
-	} else {
-		ctx->wst_top = operand;
-	}
-
-	if (operand.is_short) {
-		buxn_jit_value_t* hi = &stack[(*stack_ptr)++];
-		buxn_jit_value_t* lo = &stack[(*stack_ptr)++];
-		hi->semantics = lo->semantics = operand.semantics;
-		hi->const_value = operand.const_value >> 8;
-		lo->const_value = operand.const_value & 0xff;
-
-		buxn_jit_set_mem_base(ctx, mem_base);
-
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_LSHR,
-			BUXN_JIT_TMP(), 0,
-			operand.reg, 0,
-			SLJIT_IMM, 8
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM(), 0,
-			BUXN_JIT_TMP(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_ADD,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_AND,
-			BUXN_JIT_TMP(), 0,
-			operand.reg, 0,
-			SLJIT_IMM, 0xff
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM(), 0,
-			BUXN_JIT_TMP(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_ADD,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-	} else {
-		buxn_jit_value_t* value = &stack[(*stack_ptr)++];
-		value->semantics = operand.semantics;
-		value->const_value = (uint8_t)operand.const_value;
-
-		buxn_jit_set_mem_base(ctx, mem_base);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM(), 0,
-			operand.reg, 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_ADD,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-	}
+buxn_jit_push(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
+	buxn_jit_push_ex(ctx, operand, buxn_jit_op_flag_r(ctx));
 }
 
 static buxn_jit_operand_t
 buxn_jit_pop(buxn_jit_ctx_t* ctx) {
 	return buxn_jit_pop_ex(ctx, buxn_jit_op_flag_2(ctx), buxn_jit_op_flag_r(ctx));
-}
-
-static void
-buxn_jit_push(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
-	buxn_jit_push_ex(ctx, operand, buxn_jit_op_flag_r(ctx));
 }
 
 static buxn_jit_operand_t
@@ -665,9 +702,10 @@ buxn_jit_load(
 #if BUXN_JIT_VERBOSE
 	fprintf(
 		stderr,
-		"  ; r%d = load(addr=0x%04x, flag_2=%d)\n",
+		"  ; r%d = load(addr=r%d(0x%04x), flag_2=%d)\n",
 		result.reg - SLJIT_R0,
-		ctx->pc,
+		addr.reg - SLJIT_R0,
+		addr.const_value,
 		result.is_short
 	);
 #endif
@@ -737,8 +775,9 @@ buxn_jit_store(
 #if BUXN_JIT_VERBOSE
 	fprintf(
 		stderr,
-		"  ; store(addr=r%d, value=r%d, flag_2=%d)\n",
+		"  ; store(addr=r%d(0x%040x), value=r%d, flag_2=%d)\n",
 		addr.reg - SLJIT_R0,
+		addr.const_value,
 		value.reg - SLJIT_R0,
 		value.is_short
 	);
@@ -880,8 +919,6 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 			fprintf(stderr, "  ; jump => label%d\n", skip_id);
 #endif
 
-			// Discard mem base and cached stack tops
-			//
 			// This is because we can return from this call and continue execution
 			// The target is compiled by a different buxn_jit_ctx_t so upon return,
 			// the cached states will be invalid.
@@ -889,8 +926,6 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 			// Other remote jumps do not have to care about cache invalidation
 			// since execution will never return to this function.
 			ctx->mem_base = 0;
-			ctx->wst_top.reg = 0;
-			ctx->rst_top.reg = 0;
 			struct sljit_jump* call = sljit_emit_call(
 				ctx->compiler,
 				SLJIT_CALL_REG_ARG | SLJIT_REWRITABLE_JUMP,
@@ -957,6 +992,8 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 
 static void
 buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
+	buxn_jit_flush_stacks(ctx);
+
 #if BUXN_JIT_VERBOSE
 	fprintf(
 		stderr,
@@ -1018,6 +1055,8 @@ buxn_jit_conditional_jump(
 	buxn_jit_operand_t condition,
 	buxn_jit_operand_t target
 ) {
+	buxn_jit_flush_stacks(ctx);
+
 	sljit_emit_op2u(
 		ctx->compiler,
 		SLJIT_AND | SLJIT_SET_Z,
@@ -1188,32 +1227,13 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
 	return target;
 }
 
-static void
-buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
-	// If a boolean op is executed right before a JCI, do not push the result
-	// and just immediately use it.
-	uint8_t next_opcode = ctx->jit->vm->memory[ctx->pc];
-	if (
-		!operand.is_short
-		&&
-		next_opcode == 0x20 /* JCI */
-		&&
-		!buxn_jit_op_flag_r(ctx)
-	) {
-		++ctx->pc;
-		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx);
-		buxn_jit_conditional_jump(ctx, operand, target);
-	} else {
-		buxn_jit_push(ctx, operand);
-	}
-}
-
 // }}}
 
 // Opcodes {{{
 
 static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
+	buxn_jit_flush_stacks(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
 	buxn_jit_finalize(ctx);
 }
@@ -1244,11 +1264,11 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 
 	uint8_t size = buxn_jit_op_flag_2(ctx) ? 2 : 1;
 	if (buxn_jit_op_flag_r(ctx)) {
+		buxn_jit_flush_stack(ctx, &ctx->rst_top);
 		ctx->rsp -= size;
-		ctx->rst_top.reg = 0;
 	} else {
+		buxn_jit_flush_stack(ctx, &ctx->wst_top);
 		ctx->wsp -= size;
-		ctx->wst_top.reg = 0;
 	}
 
 	buxn_jit_reg_t stack_ptr_reg = buxn_jit_op_flag_r(ctx)
@@ -1329,7 +1349,7 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1356,7 +1376,7 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1383,7 +1403,7 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1410,7 +1430,7 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1455,7 +1475,7 @@ static void
 buxn_jit_LDZ(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
 	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
-	buxn_jit_maybe_JCI(ctx, value);
+	buxn_jit_push(ctx, value);
 }
 
 static void
@@ -1483,7 +1503,7 @@ buxn_jit_LDR(buxn_jit_ctx_t* ctx) {
 	);
 	addr.is_short = true;
 	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
-	buxn_jit_maybe_JCI(ctx, value);
+	buxn_jit_push(ctx, value);
 }
 
 static void
@@ -1511,7 +1531,7 @@ static void
 buxn_jit_LDA(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, true, buxn_jit_op_flag_r(ctx));
 	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
-	buxn_jit_maybe_JCI(ctx, value);
+	buxn_jit_push(ctx, value);
 }
 
 static void
@@ -1540,10 +1560,10 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		.is_short = buxn_jit_op_flag_2(ctx),
 		.reg = buxn_jit_alloc_reg(ctx),
 	};
+
+	buxn_jit_flush_stacks(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
-	ctx->wst_top.reg = 0;
-	ctx->rst_top.reg = 0;
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_P,
@@ -1556,6 +1576,7 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		SLJIT_R1, 0,
 		addr.reg, 0
 	);
+	buxn_jit_free_reg(ctx, addr.reg);
 	sljit_emit_icall(
 		ctx->compiler,
 		SLJIT_CALL,
@@ -1571,9 +1592,8 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		SLJIT_R0, 0
 	);
 	buxn_jit_load_state(ctx);
-	buxn_jit_free_reg(ctx, addr.reg);
 
-	buxn_jit_maybe_JCI(ctx, result);
+	buxn_jit_push(ctx, result);
 }
 
 static void
@@ -1648,11 +1668,11 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 			value.reg, 0
 		);
 	}
+	buxn_jit_free_reg(ctx, value.reg);
 
+	buxn_jit_flush_stacks(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
-	ctx->wst_top.reg = 0;
-	ctx->rst_top.reg = 0;
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_P,
@@ -1665,6 +1685,7 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 		SLJIT_R1, 0,
 		addr.reg, 0
 	);
+	buxn_jit_free_reg(ctx, addr.reg);
 	sljit_emit_icall(
 		ctx->compiler,
 		SLJIT_CALL,
@@ -1674,9 +1695,6 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 			: SLJIT_FUNC_ADDR(buxn_jit_deo_helper)
 	);
 	buxn_jit_load_state(ctx);
-
-	buxn_jit_free_reg(ctx, addr.reg);
-	buxn_jit_free_reg(ctx, value.reg);
 }
 
 static void
@@ -1865,7 +1883,7 @@ buxn_jit_AND(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1891,7 +1909,7 @@ buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -1917,7 +1935,7 @@ buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_free_reg(ctx, a.reg);
 	buxn_jit_free_reg(ctx, b.reg);
-	buxn_jit_maybe_JCI(ctx, c);
+	buxn_jit_push(ctx, c);
 }
 
 static void
@@ -2017,7 +2035,9 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 
 #if BUXN_JIT_VERBOSE
 	sljit_compiler_verbose(ctx.compiler, stderr);
-	fprintf(stderr, "  ; begin 0x%04x\n", entry->pc);
+	fprintf(stderr, "  ; 0x%04x {{{\n", entry->pc);
+
+	fprintf(stderr, "  ; Prologue {{{\n");
 #endif
 
 	// C-compatible prologue
@@ -2040,6 +2060,9 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 
 	// sljit-specific fast calling convention
 	ctx.head_label = sljit_emit_label(ctx.compiler);
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; }}}\n");
+#endif
 	sljit_set_label(call, ctx.head_label);
 	sljit_emit_enter(
 		ctx.compiler,
@@ -2056,7 +2079,7 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	}
 
 #if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; end 0x%04x\n", entry->pc);
+	fprintf(stderr, "  ; }}}\n");
 #endif
 }
 
@@ -2098,6 +2121,7 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 static void
 buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	if (ctx->pc < 256) {
+		buxn_jit_flush_stacks(ctx);
 		sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, ctx->pc);
 		buxn_jit_finalize(ctx);
 		return;
@@ -2133,23 +2157,21 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	uint8_t shadow_rsp;
 	ctx->current_opcode = ctx->jit->vm->memory[ctx->pc++];
 
-	if (
-		buxn_jit_op_flag_k(ctx)
-		&&
-		ctx->current_opcode != 0x20  // JCI
-		&&
-		ctx->current_opcode != 0x40  // JMI
-		&&
-		ctx->current_opcode != 0x60  // JSI
-		&&
-		ctx->current_opcode != 0x80  // LIT
-		&&
-		ctx->current_opcode != 0xa0  // LIT2
-		&&
-		ctx->current_opcode != 0xc0  // LITr
-		&&
-		ctx->current_opcode != 0xe0  // LIT2r
-	) {
+	if (buxn_jit_op_flag_k(ctx)) {
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; Shadow stack {{{\n");
+#endif
+		if (ctx->wst_top.reg != 0) {
+			buxn_jit_reg_t reg = ctx->wst_top.reg;
+			buxn_jit_flush_stack(ctx, &ctx->wst_top);
+			buxn_jit_free_reg(ctx, reg);
+		}
+		if (ctx->rst_top.reg != 0) {
+			buxn_jit_reg_t reg = ctx->rst_top.reg;
+			buxn_jit_flush_stack(ctx, &ctx->rst_top);
+			buxn_jit_free_reg(ctx, reg);
+		}
+
 		shadow_wsp = ctx->wsp;
 		shadow_rsp = ctx->rsp;
 		ctx->ewsp = &shadow_wsp;
@@ -2171,6 +2193,9 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 		);
 		ctx->wsp_reg = swsp_reg;
 		ctx->rsp_reg = srsp_reg;
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; }}}\n");
+#endif
 	} else {
 		ctx->ewsp = &ctx->wsp;
 		ctx->ersp = &ctx->rsp;
