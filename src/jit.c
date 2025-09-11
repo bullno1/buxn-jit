@@ -152,6 +152,11 @@ struct buxn_jit_s {
 };
 
 typedef struct {
+	buxn_jit_operand_t value;
+	bool need_flush;
+} buxn_jit_stack_cache_t;
+
+typedef struct {
 	buxn_jit_t* jit;
 	buxn_jit_block_t* block;
 	struct sljit_compiler* compiler;
@@ -170,8 +175,8 @@ typedef struct {
 	buxn_jit_reg_t rsp_reg;
 	uint8_t used_registers;
 
-	buxn_jit_operand_t wst_top;
-	buxn_jit_operand_t rst_top;
+	buxn_jit_stack_cache_t wst_cache;
+	buxn_jit_stack_cache_t rst_cache;
 #if BUXN_JIT_VERBOSE
 	int label_id;
 #endif
@@ -346,7 +351,14 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 
 static inline bool
 buxn_jit_op_flag_2(buxn_jit_ctx_t* ctx) {
-	return ctx->current_opcode & BUXN_JIT_OP_2;
+	return ctx->current_opcode & BUXN_JIT_OP_2
+		&&
+		ctx->current_opcode != 0x20  // JCI
+		&&
+		ctx->current_opcode != 0x40  // JMI
+		&&
+		ctx->current_opcode != 0x60  // JSI
+		;
 }
 
 static inline bool
@@ -371,7 +383,14 @@ buxn_jit_op_flag_k(buxn_jit_ctx_t* ctx) {
 
 static inline bool
 buxn_jit_op_flag_r(buxn_jit_ctx_t* ctx) {
-	return ctx->current_opcode & BUXN_JIT_OP_R;
+	return ctx->current_opcode & BUXN_JIT_OP_R
+		&&
+		ctx->current_opcode != 0x20  // JCI
+		&&
+		ctx->current_opcode != 0x40  // JMI
+		&&
+		ctx->current_opcode != 0x60  // JSI
+		;
 }
 
 static inline void
@@ -480,14 +499,14 @@ buxn_jit_do_push(
 }
 
 static void
-buxn_jit_flush_stack(buxn_jit_ctx_t* ctx, buxn_jit_operand_t* stack) {
-	bool flag_r = stack == &ctx->rst_top;
-	if (stack->reg != 0) {
+buxn_jit_flush_stack_cache(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) {
+	bool flag_r = cache == &ctx->rst_cache;
+	if (cache->need_flush) {
 #if BUXN_JIT_VERBOSE
 		fprintf(stderr, "  ; flush %s {{{\n", flag_r ? "RST" : "WST");
 #endif
-		buxn_jit_do_push(ctx, *stack, flag_r);
-		stack->reg = 0;
+		buxn_jit_do_push(ctx, cache->value, flag_r);
+		cache->need_flush = false;
 #if BUXN_JIT_VERBOSE
 		fprintf(stderr, "  ; }}}\n");
 #endif
@@ -495,9 +514,25 @@ buxn_jit_flush_stack(buxn_jit_ctx_t* ctx, buxn_jit_operand_t* stack) {
 }
 
 static void
-buxn_jit_flush_stacks(buxn_jit_ctx_t* ctx) {
-	buxn_jit_flush_stack(ctx, &ctx->wst_top);
-	buxn_jit_flush_stack(ctx, &ctx->rst_top);
+buxn_jit_discard_stack_cache(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) {
+	if (cache->value.reg != 0) {
+#if BUXN_JIT_VERBOSE
+		bool flag_r = cache == &ctx->rst_cache;
+		fprintf(stderr, "  ; discard %s {{{\n", flag_r ? "RST" : "WST");
+#endif
+		buxn_jit_flush_stack_cache(ctx, cache);
+		buxn_jit_free_reg(ctx, cache->value.reg);
+		cache->value.reg = 0;
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; }}}\n");
+#endif
+	}
+}
+
+static void
+buxn_jit_discard_stack_caches(buxn_jit_ctx_t* ctx) {
+	buxn_jit_discard_stack_cache(ctx, &ctx->wst_cache);
+	buxn_jit_discard_stack_cache(ctx, &ctx->rst_cache);
 }
 
 static void
@@ -518,11 +553,10 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 	);
 
 	// Defer the entire push operation until it's actually needed
-	buxn_jit_operand_t* deferred_push = flag_r ? &ctx->rst_top : &ctx->wst_top;
-	if (deferred_push->reg != 0) {
-		buxn_jit_flush_stack(ctx, deferred_push);
-	}
-	*deferred_push = operand;
+	buxn_jit_stack_cache_t* cache = flag_r ? &ctx->rst_cache : &ctx->wst_cache;
+	buxn_jit_flush_stack_cache(ctx, cache);
+	cache->value = operand;
+	cache->need_flush = true;
 
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
@@ -556,9 +590,9 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 		.is_short = flag_2,
 	};
 
-	buxn_jit_operand_t* cached_operand = flag_r ? &ctx->rst_top : &ctx->wst_top;
+	buxn_jit_stack_cache_t* cache = flag_r ? &ctx->rst_cache : &ctx->wst_cache;
 	BUXN_JIT_ASSERT(
-		(cached_operand->reg == 0) || (ctx->used_registers & buxn_jit_reg_mask(cached_operand->reg)),
+		(cache->value.reg == 0) || (ctx->used_registers & buxn_jit_reg_mask(cache->value.reg)),
 		"Cached operand's register is not reserved"
 	);
 
@@ -574,10 +608,22 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 			operand.const_value = (uint16_t)hi.const_value << 8 | (uint16_t)lo.const_value;
 		}
 
-		if (cached_operand->reg != 0 && cached_operand->is_short) {
-			operand = *cached_operand;
+		if (cache->value.reg != 0 && cache->value.is_short) {
+			operand = cache->value;
+
+			// In keep mode, we have to adjust the shadow stack pointer so
+			// subsequent pops get the correct data
+			if (buxn_jit_op_flag_k(ctx)) {
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_SUB,
+					stack_ptr_reg, 0,
+					stack_ptr_reg, 0,
+					SLJIT_IMM, 2
+				);
+			}
 		} else {
-			buxn_jit_flush_stack(ctx, cached_operand);
+			buxn_jit_discard_stack_cache(ctx, cache);
 
 			operand.reg = buxn_jit_alloc_reg(ctx);
 			buxn_jit_set_mem_base(ctx, mem_base);
@@ -641,10 +687,22 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 		operand.const_value = value.const_value;
 		operand.semantics = value.semantics;
 
-		if (cached_operand->reg != 0 && !cached_operand->is_short) {
-			operand = *cached_operand;
+		if (cache->value.reg != 0 && !cache->value.is_short) {
+			operand = cache->value;
+
+			// In keep mode, we have to adjust the shadow stack pointer so
+			// subsequent pops get the correct data
+			if (buxn_jit_op_flag_k(ctx)) {
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_SUB,
+					stack_ptr_reg, 0,
+					stack_ptr_reg, 0,
+					SLJIT_IMM, 1
+				);
+			}
 		} else {
-			buxn_jit_flush_stack(ctx, cached_operand);
+			buxn_jit_discard_stack_cache(ctx, cache);
 
 			operand.reg = buxn_jit_alloc_reg(ctx);
 			buxn_jit_set_mem_base(ctx, mem_base);
@@ -670,7 +728,8 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 		}
 	}
 
-	cached_operand->reg = 0;
+	cache->value.reg = 0;
+	cache->need_flush = false;
 
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; }}} => r%d\n", operand.reg - SLJIT_R0);
@@ -992,7 +1051,7 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 
 static void
 buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
-	buxn_jit_flush_stacks(ctx);
+	buxn_jit_discard_stack_caches(ctx);
 
 #if BUXN_JIT_VERBOSE
 	fprintf(
@@ -1055,7 +1114,7 @@ buxn_jit_conditional_jump(
 	buxn_jit_operand_t condition,
 	buxn_jit_operand_t target
 ) {
-	buxn_jit_flush_stacks(ctx);
+	buxn_jit_discard_stack_caches(ctx);
 
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1233,7 +1292,7 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
-	buxn_jit_flush_stacks(ctx);
+	buxn_jit_discard_stack_caches(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
 	buxn_jit_finalize(ctx);
 }
@@ -1264,10 +1323,10 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 
 	uint8_t size = buxn_jit_op_flag_2(ctx) ? 2 : 1;
 	if (buxn_jit_op_flag_r(ctx)) {
-		buxn_jit_flush_stack(ctx, &ctx->rst_top);
+		buxn_jit_discard_stack_cache(ctx, &ctx->rst_cache);
 		ctx->rsp -= size;
 	} else {
-		buxn_jit_flush_stack(ctx, &ctx->wst_top);
+		buxn_jit_discard_stack_cache(ctx, &ctx->wst_cache);
 		ctx->wsp -= size;
 	}
 
@@ -1561,7 +1620,7 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		.reg = buxn_jit_alloc_reg(ctx),
 	};
 
-	buxn_jit_flush_stacks(ctx);
+	buxn_jit_discard_stack_caches(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
 	sljit_emit_op1(
@@ -1670,7 +1729,7 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 	}
 	buxn_jit_free_reg(ctx, value.reg);
 
-	buxn_jit_flush_stacks(ctx);
+	buxn_jit_discard_stack_caches(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
 	sljit_emit_op1(
@@ -2121,7 +2180,7 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 static void
 buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	if (ctx->pc < 256) {
-		buxn_jit_flush_stacks(ctx);
+		buxn_jit_discard_stack_caches(ctx);
 		sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, ctx->pc);
 		buxn_jit_finalize(ctx);
 		return;
@@ -2130,11 +2189,11 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	ctx->used_registers = 0;
 	// Retain the top stack cache operand so we can avoid popping something that
 	// was recently pushed
-	if (ctx->wst_top.reg != 0) {
-		ctx->used_registers |= buxn_jit_reg_mask(ctx->wst_top.reg);
+	if (ctx->wst_cache.value.reg != 0) {
+		ctx->used_registers |= buxn_jit_reg_mask(ctx->wst_cache.value.reg);
 	}
-	if (ctx->rst_top.reg != 0) {
-		ctx->used_registers |= buxn_jit_reg_mask(ctx->rst_top.reg);
+	if (ctx->rst_cache.value.reg != 0) {
+		ctx->used_registers |= buxn_jit_reg_mask(ctx->rst_cache.value.reg);
 	}
 #if BUXN_JIT_VERBOSE
 	if (ctx->used_registers != 0) {
@@ -2161,16 +2220,12 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 #if BUXN_JIT_VERBOSE
 		fprintf(stderr, "  ; Shadow stack {{{\n");
 #endif
-		if (ctx->wst_top.reg != 0) {
-			buxn_jit_reg_t reg = ctx->wst_top.reg;
-			buxn_jit_flush_stack(ctx, &ctx->wst_top);
-			buxn_jit_free_reg(ctx, reg);
-		}
-		if (ctx->rst_top.reg != 0) {
-			buxn_jit_reg_t reg = ctx->rst_top.reg;
-			buxn_jit_flush_stack(ctx, &ctx->rst_top);
-			buxn_jit_free_reg(ctx, reg);
-		}
+		// In keep mode, since the opcode will not actually pop from the stack,
+		// the cache has to be flushed to maintain the correct stack content
+		buxn_jit_stack_cache_t* cache = buxn_jit_op_flag_r(ctx)
+			? &ctx->rst_cache
+			: &ctx->wst_cache;
+		buxn_jit_flush_stack_cache(ctx, cache);
 
 		shadow_wsp = ctx->wsp;
 		shadow_rsp = ctx->rsp;
