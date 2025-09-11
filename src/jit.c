@@ -22,6 +22,8 @@
 #	include <stdio.h>
 #endif
 
+#define BUXN_JIT_CACHE_SIZE 4
+
 #define BUXN_JIT_ADDR_EQ(LHS, RHS) (LHS == RHS)
 #define BUXN_JIT_MEM() SLJIT_MEM2(SLJIT_R(BUXN_JIT_R_MEM_BASE), SLJIT_R(BUXN_JIT_R_MEM_OFFSET))
 #define BUXN_JIT_MEM_OFFSET() SLJIT_R(BUXN_JIT_R_MEM_OFFSET)
@@ -154,6 +156,11 @@ struct buxn_jit_s {
 typedef struct {
 	buxn_jit_operand_t value;
 	bool need_flush;
+} buxn_jit_stack_cache_cell_t;
+
+typedef struct {
+	buxn_jit_stack_cache_cell_t cells[BUXN_JIT_CACHE_SIZE];
+	uint8_t len;
 } buxn_jit_stack_cache_t;
 
 typedef struct {
@@ -233,45 +240,6 @@ buxn_jit_cleanup(buxn_jit_t* jit) {
 	}
 }
 
-static buxn_jit_reg_t
-buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
-	_Static_assert(
-		sizeof(ctx->used_registers) * CHAR_BIT >= (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1),
-		"buxn_jit_ctx_t::used_registers needs more bits"
-	);
-
-	for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
-		uint8_t mask = 1 << i;
-		if ((ctx->used_registers & mask) == 0) {
-			ctx->used_registers |= mask;
-#if BUXN_JIT_VERBOSE
-			fprintf(stderr, "  ; alloc_reg(r%d)\n", SLJIT_R(BUXN_JIT_R_OP_MIN + i) - SLJIT_R0);
-#endif
-			return SLJIT_R(BUXN_JIT_R_OP_MIN + i);
-		}
-	}
-
-	BUXN_JIT_ASSERT(false, "Out of registers");
-	return 0;
-}
-
-static uint8_t
-buxn_jit_reg_mask(buxn_jit_reg_t reg) {
-	int reg_no = reg - SLJIT_R0;
-	BUXN_JIT_ASSERT(BUXN_JIT_R_OP_MIN <= reg_no && reg_no <= BUXN_JIT_R_OP_MAX, "Invalid register");
-	return (uint8_t)1 << (reg_no - BUXN_JIT_R_OP_MIN);
-}
-
-static void
-buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
-#if BUXN_JIT_VERBOSE
-	fprintf(stderr, "  ; free_reg(r%d)\n", reg - SLJIT_R0);
-#endif
-	uint8_t mask = buxn_jit_reg_mask(reg);
-	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
-	ctx->used_registers &= ~mask;
-}
-
 static void
 buxn_jit_finalize(buxn_jit_ctx_t* ctx);
 
@@ -345,9 +313,9 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 	return block;
 }
 
-// }}}
+// }}}/
 
-// Micro ops {{{
+// Utils {{{
 
 static inline bool
 buxn_jit_op_flag_2(buxn_jit_ctx_t* ctx) {
@@ -393,17 +361,273 @@ buxn_jit_op_flag_r(buxn_jit_ctx_t* ctx) {
 		;
 }
 
-static inline void
-buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base) {
-	if (ctx->mem_base != base) {
+static buxn_jit_reg_t
+buxn_jit_find_free_reg(buxn_jit_ctx_t* ctx) {
+	_Static_assert(
+		sizeof(ctx->used_registers) * CHAR_BIT >= (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1),
+		"buxn_jit_ctx_t::used_registers needs more bits"
+	);
+
+	for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
+		uint8_t mask = 1 << i;
+		if ((ctx->used_registers & mask) == 0) {
+			ctx->used_registers |= mask;
+			return SLJIT_R(BUXN_JIT_R_OP_MIN + i);
+		}
+	}
+
+	return 0;
+}
+
+static bool
+buxn_jit_stack_cache_spill(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t* cache
+);
+
+static buxn_jit_reg_t
+buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
+	buxn_jit_reg_t reg = buxn_jit_find_free_reg(ctx);
+	if (reg == 0) {
+		// Try to spill from current cache first then opposing cache
+		if (buxn_jit_op_flag_r(ctx)) {
+			if (!buxn_jit_stack_cache_spill(ctx, &ctx->rst_cache)) {
+				buxn_jit_stack_cache_spill(ctx, &ctx->wst_cache);
+			}
+		} else {
+			if (!buxn_jit_stack_cache_spill(ctx, &ctx->wst_cache)) {
+				buxn_jit_stack_cache_spill(ctx, &ctx->rst_cache);
+			}
+		}
+		reg = buxn_jit_find_free_reg(ctx);
+	}
+	BUXN_JIT_ASSERT(reg != 0, "Out of registers");
+
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; alloc_reg() => r%d\n", reg - SLJIT_R0);
+#endif
+
+	return reg;
+}
+
+static uint8_t
+buxn_jit_reg_mask(buxn_jit_reg_t reg) {
+	int reg_no = reg - SLJIT_R0;
+	BUXN_JIT_ASSERT(BUXN_JIT_R_OP_MIN <= reg_no && reg_no <= BUXN_JIT_R_OP_MAX, "Invalid register");
+	return (uint8_t)1 << (reg_no - BUXN_JIT_R_OP_MIN);
+}
+
+static void
+buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; free_reg(r%d)\n", reg - SLJIT_R0);
+#endif
+	uint8_t mask = buxn_jit_reg_mask(reg);
+	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
+	ctx->used_registers &= ~mask;
+}
+
+// }}}
+
+// Stack cache {{{
+
+static void
+buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base);
+
+static void
+buxn_jit_stack_cache_push(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t*  cache,
+	buxn_jit_operand_t value
+) {
+	if (cache->len >= BUXN_JIT_CACHE_SIZE) {
+		buxn_jit_stack_cache_spill(ctx, cache);
+	}
+
+	buxn_jit_stack_cache_cell_t* cell = &cache->cells[cache->len++];
+	cell->value = value;
+	cell->need_flush = true;
+}
+
+static buxn_jit_reg_t
+buxn_jit_pop_from_mem(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
+	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
+	buxn_jit_set_mem_base(ctx, mem_base);
+
+	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
+	buxn_jit_reg_t reg = buxn_jit_alloc_reg(ctx);
+
+	if (flag_2) {
 		sljit_emit_op2(
 			ctx->compiler,
-			SLJIT_ADD,
-			SLJIT_R(BUXN_JIT_R_MEM_BASE), 0,
-			SLJIT_S(BUXN_JIT_S_VM), 0,
-			SLJIT_IMM, base
+			SLJIT_SUB,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
 		);
-		ctx->mem_base = base;
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SUB,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_TMP(), 0,
+			BUXN_JIT_MEM(), 0
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SHL,
+			BUXN_JIT_TMP(), 0,
+			BUXN_JIT_TMP(), 0,
+			SLJIT_IMM, 8
+		);
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_OR,
+			reg, 0,
+			reg, 0,
+			BUXN_JIT_TMP(), 0
+		);
+	} else {
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_SUB,
+			stack_ptr_reg, 0,
+			stack_ptr_reg, 0,
+			SLJIT_IMM, 1
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			BUXN_JIT_MEM_OFFSET(), 0,
+			stack_ptr_reg, 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			reg, 0,
+			BUXN_JIT_MEM(), 0
+		);
+	}
+
+	return reg;
+}
+
+static buxn_jit_reg_t
+buxn_jit_stack_cache_pop(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t*  cache,
+	bool flag_2
+) {
+	bool flag_r = cache == &ctx->rst_cache;
+	if (flag_2) {
+		if (cache->len == 0) {
+			// There is nothing in the cache, pop from memory
+			return buxn_jit_pop_from_mem(ctx, flag_2, flag_r);
+		} else {
+			buxn_jit_stack_cache_cell_t* top = &cache->cells[--cache->len];
+			if (top->value.is_short) {
+				// The top value is the right size, just return it
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_AND,
+					top->value.reg, 0,
+					top->value.reg, 0,
+					SLJIT_IMM, 0xffff
+				);
+				return top->value.reg;
+			} else {
+				// The top value is a byte, pop the high byte from the stack
+				buxn_jit_reg_t hi = buxn_jit_stack_cache_pop(ctx, cache, false);
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_SHL,
+					hi, 0,
+					hi, 0,
+					SLJIT_IMM, 8
+				);
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_OR,
+					hi, 0,
+					hi, 0,
+					top->value.reg, 0
+				);
+				buxn_jit_free_reg(ctx, top->value.reg);
+				return hi;
+			}
+		}
+	} else {
+		if (cache->len == 0) {
+			// There is nothing in the cache, pop from memory
+			return buxn_jit_pop_from_mem(ctx, flag_2, flag_r);
+		} else {
+			buxn_jit_stack_cache_cell_t* top = &cache->cells[cache->len - 1];
+
+			if (top->value.is_short) {
+				// The top value is a short, try to split it
+				// Alloc a register to hold the low byte
+				buxn_jit_reg_t reg = buxn_jit_alloc_reg(ctx);
+
+				// Allocating a register could force a spill
+				if (cache->len == 0) {
+					// Try to pop from memory instead
+					buxn_jit_free_reg(ctx, reg);
+					return buxn_jit_pop_from_mem(ctx, flag_2, flag_r);
+				} else {
+					// Actually try to split the top value
+					sljit_emit_op1(
+						ctx->compiler,
+						SLJIT_MOV_U8,
+						reg, 0,
+						top->value.reg, 0
+					);
+					sljit_emit_op2(
+						ctx->compiler,
+						SLJIT_LSHR,
+						top->value.reg, 0,
+						top->value.reg, 0,
+						SLJIT_IMM, 8
+					);
+					top->value.is_short = false;
+					return reg;
+				}
+			} else {
+				// The top value is the right size, just return it
+				cache->len -= 1;
+				sljit_emit_op2(
+					ctx->compiler,
+					SLJIT_AND,
+					top->value.reg, 0,
+					top->value.reg, 0,
+					SLJIT_IMM, 0x00ff
+				);
+				return top->value.reg;
+			}
+		}
 	}
 }
 
@@ -499,40 +723,117 @@ buxn_jit_do_push(
 }
 
 static void
-buxn_jit_flush_stack_cache(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) {
+buxn_jit_flush_cell(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_cell_t* cell,
+	bool flag_r
+) {
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; flush(reg=r%d, flag_2=%d, flag_r=%d) {{{\n",
+		cell->value.reg - SLJIT_R0,
+		cell->value.is_short,
+		flag_r
+	);
+#endif
+	buxn_jit_do_push(ctx, cell->value, flag_r);
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; }}}\n");
+#endif
+	cell->need_flush = false;
+}
+
+static bool
+buxn_jit_stack_cache_spill(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t* cache
+) {
+	if (cache->len == 0) { return false; }
+
 	bool flag_r = cache == &ctx->rst_cache;
-	if (cache->need_flush) {
-#if BUXN_JIT_VERBOSE
-		fprintf(stderr, "  ; flush %s {{{\n", flag_r ? "RST" : "WST");
-#endif
-		buxn_jit_do_push(ctx, cache->value, flag_r);
-		cache->need_flush = false;
-#if BUXN_JIT_VERBOSE
-		fprintf(stderr, "  ; }}}\n");
-#endif
+
+	buxn_jit_stack_cache_cell_t* cell = &cache->cells[0];
+	if (cell->need_flush) {
+		buxn_jit_flush_cell(ctx, cell, flag_r);
+	}
+	buxn_jit_free_reg(ctx, cell->value.reg);
+
+	cache->len -= 1;
+	memmove(
+		&cache->cells[0],
+		&cache->cells[1],
+		cache->len * sizeof(cache->cells[0])
+	);
+
+	return true;
+}
+
+static void
+buxn_jit_stack_cache_flush(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t* cache
+) {
+	bool flag_r = cache == &ctx->rst_cache;
+	for (uint8_t i = 0; i < cache->len; ++i) {
+		buxn_jit_stack_cache_cell_t* cell = &cache->cells[i];
+		if (cell->need_flush) {
+			buxn_jit_flush_cell(ctx, cell, flag_r);
+		}
 	}
 }
 
 static void
-buxn_jit_discard_stack_cache(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) {
-	if (cache->value.reg != 0) {
-#if BUXN_JIT_VERBOSE
-		bool flag_r = cache == &ctx->rst_cache;
-		fprintf(stderr, "  ; discard %s {{{\n", flag_r ? "RST" : "WST");
-#endif
-		buxn_jit_flush_stack_cache(ctx, cache);
-		buxn_jit_free_reg(ctx, cache->value.reg);
-		cache->value.reg = 0;
-#if BUXN_JIT_VERBOSE
-		fprintf(stderr, "  ; }}}\n");
-#endif
-	}
+buxn_jit_stack_cache_clear(
+	buxn_jit_ctx_t* ctx,
+	buxn_jit_stack_cache_t* cache
+) {
+	while (buxn_jit_stack_cache_spill(ctx, cache)) { }
 }
 
 static void
-buxn_jit_discard_stack_caches(buxn_jit_ctx_t* ctx) {
-	buxn_jit_discard_stack_cache(ctx, &ctx->wst_cache);
-	buxn_jit_discard_stack_cache(ctx, &ctx->rst_cache);
+buxn_jit_clear_stack_caches(buxn_jit_ctx_t* ctx) {
+	buxn_jit_stack_cache_clear(ctx, &ctx->wst_cache);
+	buxn_jit_stack_cache_clear(ctx, &ctx->rst_cache);
+}
+
+static void
+buxn_jit_stack_cache_retain(buxn_jit_ctx_t* ctx, buxn_jit_stack_cache_t* cache) {
+	// Remove flushed cells
+	uint8_t num_flushed = 0;
+	for (uint8_t i = 0; i < cache->len; ++i) {
+		buxn_jit_stack_cache_cell_t* cell = &cache->cells[i];
+		num_flushed += !cell->need_flush;
+	}
+	cache->len -= num_flushed;
+	memmove(
+		&cache->cells[0],
+		&cache->cells[num_flushed],
+		cache->len * sizeof(cache->cells[0])
+	);
+
+	for (uint8_t i = 0; i < cache->len; ++i) {
+		buxn_jit_stack_cache_cell_t* cell = &cache->cells[i];
+		ctx->used_registers |= buxn_jit_reg_mask(cell->value.reg);
+	}
+}
+
+// }}}
+
+// Micro ops {{{
+
+static inline void
+buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base) {
+	if (ctx->mem_base != base) {
+		sljit_emit_op2(
+			ctx->compiler,
+			SLJIT_ADD,
+			SLJIT_R(BUXN_JIT_R_MEM_BASE), 0,
+			SLJIT_S(BUXN_JIT_S_VM), 0,
+			SLJIT_IMM, base
+		);
+		ctx->mem_base = base;
+	}
 }
 
 static void
@@ -554,9 +855,7 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 
 	// Defer the entire push operation until it's actually needed
 	buxn_jit_stack_cache_t* cache = flag_r ? &ctx->rst_cache : &ctx->wst_cache;
-	buxn_jit_flush_stack_cache(ctx, cache);
-	cache->value = operand;
-	cache->need_flush = true;
+	buxn_jit_stack_cache_push(ctx, cache, operand);
 
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
@@ -583,18 +882,9 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? ctx->ersp : ctx->ewsp;
 
-	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
-	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
-
 	buxn_jit_operand_t operand = {
 		.is_short = flag_2,
 	};
-
-	buxn_jit_stack_cache_t* cache = flag_r ? &ctx->rst_cache : &ctx->wst_cache;
-	BUXN_JIT_ASSERT(
-		(cache->value.reg == 0) || (ctx->used_registers & buxn_jit_reg_mask(cache->value.reg)),
-		"Cached operand's register is not reserved"
-	);
 
 	if (flag_2) {
 		buxn_jit_value_t lo = stack[--(*stack_ptr)];
@@ -607,129 +897,14 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 			operand.semantics = BUXN_JIT_SEM_CONST;
 			operand.const_value = (uint16_t)hi.const_value << 8 | (uint16_t)lo.const_value;
 		}
-
-		if (cache->value.reg != 0 && cache->value.is_short) {
-			operand = cache->value;
-
-			// In keep mode, we have to adjust the shadow stack pointer so
-			// subsequent pops get the correct data
-			if (buxn_jit_op_flag_k(ctx)) {
-				sljit_emit_op2(
-					ctx->compiler,
-					SLJIT_SUB,
-					stack_ptr_reg, 0,
-					stack_ptr_reg, 0,
-					SLJIT_IMM, 2
-				);
-			}
-		} else {
-			buxn_jit_discard_stack_cache(ctx, cache);
-
-			operand.reg = buxn_jit_alloc_reg(ctx);
-			buxn_jit_set_mem_base(ctx, mem_base);
-
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SUB,
-				stack_ptr_reg, 0,
-				stack_ptr_reg, 0,
-				SLJIT_IMM, 1
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				BUXN_JIT_MEM_OFFSET(), 0,
-				stack_ptr_reg, 0
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				operand.reg, 0,
-				BUXN_JIT_MEM(), 0
-			);
-
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SUB,
-				stack_ptr_reg, 0,
-				stack_ptr_reg, 0,
-				SLJIT_IMM, 1
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				BUXN_JIT_MEM_OFFSET(), 0,
-				stack_ptr_reg, 0
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				BUXN_JIT_TMP(), 0,
-				BUXN_JIT_MEM(), 0
-			);
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SHL,
-				BUXN_JIT_TMP(), 0,
-				BUXN_JIT_TMP(), 0,
-				SLJIT_IMM, 8
-			);
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_OR,
-				operand.reg, 0,
-				operand.reg, 0,
-				BUXN_JIT_TMP(), 0
-			);
-		}
 	} else {
 		buxn_jit_value_t value = stack[--(*stack_ptr)];
 		operand.const_value = value.const_value;
 		operand.semantics = value.semantics;
-
-		if (cache->value.reg != 0 && !cache->value.is_short) {
-			operand = cache->value;
-
-			// In keep mode, we have to adjust the shadow stack pointer so
-			// subsequent pops get the correct data
-			if (buxn_jit_op_flag_k(ctx)) {
-				sljit_emit_op2(
-					ctx->compiler,
-					SLJIT_SUB,
-					stack_ptr_reg, 0,
-					stack_ptr_reg, 0,
-					SLJIT_IMM, 1
-				);
-			}
-		} else {
-			buxn_jit_discard_stack_cache(ctx, cache);
-
-			operand.reg = buxn_jit_alloc_reg(ctx);
-			buxn_jit_set_mem_base(ctx, mem_base);
-			sljit_emit_op2(
-				ctx->compiler,
-				SLJIT_SUB,
-				stack_ptr_reg, 0,
-				stack_ptr_reg, 0,
-				SLJIT_IMM, 1
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				BUXN_JIT_MEM_OFFSET(), 0,
-				stack_ptr_reg, 0
-			);
-			sljit_emit_op1(
-				ctx->compiler,
-				SLJIT_MOV_U8,
-				operand.reg, 0,
-				BUXN_JIT_MEM(), 0
-			);
-		}
 	}
 
-	cache->value.reg = 0;
-	cache->need_flush = false;
+	buxn_jit_stack_cache_t* cache = flag_r ? &ctx->rst_cache : &ctx->wst_cache;
+	operand.reg = buxn_jit_stack_cache_pop(ctx, cache, flag_2);
 
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; }}} => r%d\n", operand.reg - SLJIT_R0);
@@ -833,7 +1008,7 @@ buxn_jit_store(
 #if BUXN_JIT_VERBOSE
 	fprintf(
 		stderr,
-		"  ; store(addr=r%d(0x%040x), value=r%d, flag_2=%d)\n",
+		"  ; store(addr=r%d(0x%04x), value=r%d, flag_2=%d)\n",
 		addr.reg - SLJIT_R0,
 		addr.const_value,
 		value.reg - SLJIT_R0,
@@ -1047,7 +1222,7 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 
 static void
 buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
-	buxn_jit_discard_stack_caches(ctx);
+	buxn_jit_clear_stack_caches(ctx);
 
 #if BUXN_JIT_VERBOSE
 	fprintf(
@@ -1108,7 +1283,7 @@ buxn_jit_conditional_jump(
 	buxn_jit_operand_t condition,
 	buxn_jit_operand_t target
 ) {
-	buxn_jit_discard_stack_caches(ctx);
+	buxn_jit_clear_stack_caches(ctx);
 
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1285,7 +1460,7 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
-	buxn_jit_discard_stack_caches(ctx);
+	buxn_jit_clear_stack_caches(ctx);
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
 	buxn_jit_finalize(ctx);
 }
@@ -1314,26 +1489,8 @@ static void
 buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 	if (buxn_jit_op_flag_k(ctx)) { return; }  // POPk is nop
 
-	uint8_t size = buxn_jit_op_flag_2(ctx) ? 2 : 1;
-	if (buxn_jit_op_flag_r(ctx)) {
-		buxn_jit_discard_stack_cache(ctx, &ctx->rst_cache);
-		ctx->rsp -= size;
-	} else {
-		buxn_jit_discard_stack_cache(ctx, &ctx->wst_cache);
-		ctx->wsp -= size;
-	}
-
-	buxn_jit_reg_t stack_ptr_reg = buxn_jit_op_flag_r(ctx)
-		? SLJIT_S(BUXN_JIT_S_RSP)
-		: SLJIT_S(BUXN_JIT_S_WSP);
-
-	sljit_emit_op2(
-		ctx->compiler,
-		SLJIT_SUB,
-		stack_ptr_reg, 0,
-		stack_ptr_reg, 0,
-		SLJIT_IMM, size
-	);
+	// TODO: make it possible to discard instead of pop
+	buxn_jit_pop(ctx);
 }
 
 static void
@@ -1605,7 +1762,7 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		.reg = buxn_jit_alloc_reg(ctx),
 	};
 
-	buxn_jit_discard_stack_caches(ctx);
+	buxn_jit_clear_stack_caches(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
 	sljit_emit_op1(
@@ -1712,7 +1869,7 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 		);
 	}
 
-	buxn_jit_discard_stack_caches(ctx);
+	buxn_jit_clear_stack_caches(ctx);
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
 	sljit_emit_op1(
@@ -2146,36 +2303,39 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 static void
 buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	if (ctx->pc < 256) {
-		buxn_jit_discard_stack_caches(ctx);
+		buxn_jit_clear_stack_caches(ctx);
 		sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, ctx->pc);
 		buxn_jit_finalize(ctx);
 		return;
 	}
 
 	ctx->used_registers = 0;
-	// Retain the top stack cache operand so we can avoid popping something that
-	// was recently pushed
-	if (ctx->wst_cache.value.reg != 0) {
-		ctx->used_registers |= buxn_jit_reg_mask(ctx->wst_cache.value.reg);
-	}
-	if (ctx->rst_cache.value.reg != 0) {
-		ctx->used_registers |= buxn_jit_reg_mask(ctx->rst_cache.value.reg);
-	}
+	buxn_jit_stack_cache_retain(ctx, &ctx->wst_cache);
+	buxn_jit_stack_cache_retain(ctx, &ctx->rst_cache);
 #if BUXN_JIT_VERBOSE
-	if (ctx->used_registers != 0) {
-		fprintf(stderr, "  ; Retained registers:");
-		for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
-			uint8_t mask = 1 << i;
-			if (ctx->used_registers & mask) {
-				fprintf(
-					stderr,
-					" r%d",
-					SLJIT_R(BUXN_JIT_R_OP_MIN + i) - SLJIT_R0
-				);
-			}
-		}
-		fprintf(stderr, "\n");
+	fprintf(stderr, "  ; WST:");
+	for (uint8_t i = 0; i < ctx->wst_cache.len; ++i) {
+		buxn_jit_stack_cache_cell_t* cell = &ctx->wst_cache.cells[i];
+		fprintf(
+			stderr,
+			" r%d%s",
+			cell->value.reg - SLJIT_R0,
+			cell->value.is_short ? "*" : ""
+		);
 	}
+	fprintf(stderr, "\n");
+
+	fprintf(stderr, "  ; RST:");
+	for (uint8_t i = 0; i < ctx->rst_cache.len; ++i) {
+		buxn_jit_stack_cache_cell_t* cell = &ctx->rst_cache.cells[i];
+		fprintf(
+			stderr,
+			" r%d%s",
+			cell->value.reg - SLJIT_R0,
+			cell->value.is_short ? "*" : ""
+		);
+	}
+	fprintf(stderr, "\n");
 #endif
 
 	uint8_t shadow_wsp;
@@ -2186,13 +2346,6 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 #if BUXN_JIT_VERBOSE
 		fprintf(stderr, "  ; Shadow stack {{{\n");
 #endif
-		// In keep mode, since the opcode will not actually pop from the stack,
-		// the cache has to be flushed to maintain the correct stack content
-		buxn_jit_stack_cache_t* cache = buxn_jit_op_flag_r(ctx)
-			? &ctx->rst_cache
-			: &ctx->wst_cache;
-		buxn_jit_flush_stack_cache(ctx, cache);
-
 		shadow_wsp = ctx->wsp;
 		shadow_rsp = ctx->rsp;
 		ctx->ewsp = &shadow_wsp;
@@ -2214,6 +2367,14 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 		);
 		ctx->wsp_reg = swsp_reg;
 		ctx->rsp_reg = srsp_reg;
+
+		// In keep mode, since the opcode will not actually pop from the stack,
+		// the cache has to be flushed to maintain the correct stack content
+		buxn_jit_stack_cache_t* cache = buxn_jit_op_flag_r(ctx)
+			? &ctx->rst_cache
+			: &ctx->wst_cache;
+		buxn_jit_stack_cache_flush(ctx, cache);
+
 #if BUXN_JIT_VERBOSE
 		fprintf(stderr, "  ; }}}\n");
 #endif
