@@ -14,6 +14,14 @@
 #	define BUXN_JIT_ASSERT(condition, msg) assert((condition) && (msg))
 #endif
 
+#ifndef BUXN_JIT_VERBOSE
+#	define BUXN_JIT_VERBOSE 0
+#endif
+
+#if BUXN_JIT_VERBOSE
+#	include <stdio.h>
+#endif
+
 #define BUXN_JIT_ADDR_EQ(LHS, RHS) (LHS == RHS)
 #define BUXN_JIT_MEM() SLJIT_MEM2(SLJIT_R(BUXN_JIT_R_MEM_BASE), SLJIT_R(BUXN_JIT_R_MEM_OFFSET))
 #define BUXN_JIT_MEM_OFFSET() SLJIT_R(BUXN_JIT_R_MEM_OFFSET)
@@ -41,13 +49,14 @@ enum {
 	BUXN_JIT_R_OP_2,
 	BUXN_JIT_R_OP_3,
 	BUXN_JIT_R_OP_4,
+	BUXN_JIT_R_OP_5,
 
 	BUXN_JIT_R_COUNT,
 };
 
 enum {
 	BUXN_JIT_R_OP_MIN = BUXN_JIT_R_OP_0,
-	BUXN_JIT_R_OP_MAX = BUXN_JIT_R_OP_4,
+	BUXN_JIT_R_OP_MAX = BUXN_JIT_R_OP_5,
 };
 
 #undef BUXN_OPCODE_NAME
@@ -55,7 +64,18 @@ enum {
 #define BUXN_STRINGIFY(X) BUXN_STRINGIFY2(X)
 #define BUXN_STRINGIFY2(X) #X
 #define BUXN_JIT_DISPATCH(NAME, VALUE) \
-	case VALUE: { /*printf("  ; " BUXN_STRINGIFY2(NAME) "\n");*/ BUXN_CONCAT(buxn_jit_, NAME)(ctx); } break;
+	case VALUE: { \
+		if (BUXN_JIT_VERBOSE) { \
+			fprintf( \
+				stderr, \
+				"  ; " BUXN_STRINGIFY2(NAME) "%s%s%s\n", \
+				buxn_jit_op_flag_2(ctx) ? "2" : "", \
+				buxn_jit_op_flag_k(ctx) ? "k" : "", \
+				buxn_jit_op_flag_r(ctx) ? "r" : ""  \
+			); \
+		} \
+		BUXN_CONCAT(buxn_jit_, NAME)(ctx); \
+	} break;
 
 typedef sljit_u32 (*buxn_jit_fn_t)(sljit_up vm);
 
@@ -146,6 +166,12 @@ typedef struct {
 	buxn_jit_reg_t wsp_reg;
 	buxn_jit_reg_t rsp_reg;
 	uint8_t used_registers;
+
+	buxn_jit_operand_t wst_top;
+	buxn_jit_operand_t rst_top;
+#if BUXN_JIT_VERBOSE
+	int label_id;
+#endif
 } buxn_jit_ctx_t;
 
 // https://nullprogram.com/blog/2018/07/31/
@@ -210,6 +236,9 @@ buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
 		uint8_t mask = 1 << i;
 		if ((ctx->used_registers & mask) == 0) {
 			ctx->used_registers |= mask;
+#if BUXN_JIT_VERBOSE
+			fprintf(stderr, "  ; alloc_reg(r%d)\n", SLJIT_R(BUXN_JIT_R_OP_MIN + i) - SLJIT_R0);
+#endif
 			return SLJIT_R(BUXN_JIT_R_OP_MIN + i);
 		}
 	}
@@ -227,6 +256,9 @@ buxn_jit_reg_mask(buxn_jit_reg_t reg) {
 
 static void
 buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; free_reg(r%d)\n", reg - SLJIT_R0);
+#endif
 	uint8_t mask = buxn_jit_reg_mask(reg);
 	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
 	ctx->used_registers &= ~mask;
@@ -340,6 +372,10 @@ buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base) {
 
 static buxn_jit_operand_t
 buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; pop(flag_2=%d, flag_r=%d)\n", flag_2, flag_r);
+#endif
+
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? ctx->ersp : ctx->ewsp;
 
@@ -348,8 +384,13 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 
 	buxn_jit_operand_t operand = {
 		.is_short = flag_2,
-		.reg = buxn_jit_alloc_reg(ctx),
 	};
+
+	buxn_jit_operand_t* cached_operand = flag_r ? &ctx->rst_top : &ctx->wst_top;
+	BUXN_JIT_ASSERT(
+		(cached_operand->reg == 0) || (ctx->used_registers & buxn_jit_reg_mask(cached_operand->reg)),
+		"Cached operand's register is not reserved"
+	);
 
 	if (flag_2) {
 		buxn_jit_value_t lo = stack[--(*stack_ptr)];
@@ -363,87 +404,128 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 			operand.const_value = (uint16_t)hi.const_value << 8 | (uint16_t)lo.const_value;
 		}
 
-		buxn_jit_set_mem_base(ctx, mem_base);
+		if (cached_operand->reg != 0 && cached_operand->is_short) {
+			operand = *cached_operand;
 
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SUB,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			operand.reg, 0,
-			BUXN_JIT_MEM(), 0
-		);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SUB,
+				stack_ptr_reg, 0,
+				stack_ptr_reg, 0,
+				SLJIT_IMM, 2
+			);
+		} else {
+			if (cached_operand->reg != 0) {
+				buxn_jit_free_reg(ctx, cached_operand->reg);
+			}
 
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SUB,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_TMP(), 0,
-			BUXN_JIT_MEM(), 0
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SHL,
-			BUXN_JIT_TMP(), 0,
-			BUXN_JIT_TMP(), 0,
-			SLJIT_IMM, 8
-		);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_OR,
-			operand.reg, 0,
-			operand.reg, 0,
-			BUXN_JIT_TMP(), 0
-		);
+			operand.reg = buxn_jit_alloc_reg(ctx);
+			buxn_jit_set_mem_base(ctx, mem_base);
+
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SUB,
+				stack_ptr_reg, 0,
+				stack_ptr_reg, 0,
+				SLJIT_IMM, 1
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				stack_ptr_reg, 0
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				operand.reg, 0,
+				BUXN_JIT_MEM(), 0
+			);
+
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SUB,
+				stack_ptr_reg, 0,
+				stack_ptr_reg, 0,
+				SLJIT_IMM, 1
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				stack_ptr_reg, 0
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				BUXN_JIT_TMP(), 0,
+				BUXN_JIT_MEM(), 0
+			);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SHL,
+				BUXN_JIT_TMP(), 0,
+				BUXN_JIT_TMP(), 0,
+				SLJIT_IMM, 8
+			);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_OR,
+				operand.reg, 0,
+				operand.reg, 0,
+				BUXN_JIT_TMP(), 0
+			);
+		}
 	} else {
 		buxn_jit_value_t value = stack[--(*stack_ptr)];
 		operand.const_value = value.const_value;
 		operand.semantics = value.semantics;
 
-		buxn_jit_set_mem_base(ctx, mem_base);
-		sljit_emit_op2(
-			ctx->compiler,
-			SLJIT_SUB,
-			stack_ptr_reg, 0,
-			stack_ptr_reg, 0,
-			SLJIT_IMM, 1
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			BUXN_JIT_MEM_OFFSET(), 0,
-			stack_ptr_reg, 0
-		);
-		sljit_emit_op1(
-			ctx->compiler,
-			SLJIT_MOV_U8,
-			operand.reg, 0,
-			BUXN_JIT_MEM(), 0
-		);
+		if (cached_operand->reg != 0 && !cached_operand->is_short) {
+			operand = *cached_operand;
+
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SUB,
+				stack_ptr_reg, 0,
+				stack_ptr_reg, 0,
+				SLJIT_IMM, 1
+			);
+		} else {
+			if (cached_operand->reg != 0) {
+				buxn_jit_free_reg(ctx, cached_operand->reg);
+			}
+
+			operand.reg = buxn_jit_alloc_reg(ctx);
+			buxn_jit_set_mem_base(ctx, mem_base);
+			sljit_emit_op2(
+				ctx->compiler,
+				SLJIT_SUB,
+				stack_ptr_reg, 0,
+				stack_ptr_reg, 0,
+				SLJIT_IMM, 1
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				BUXN_JIT_MEM_OFFSET(), 0,
+				stack_ptr_reg, 0
+			);
+			sljit_emit_op1(
+				ctx->compiler,
+				SLJIT_MOV_U8,
+				operand.reg, 0,
+				BUXN_JIT_MEM(), 0
+			);
+		}
 	}
+
+	cached_operand->reg = 0;
+
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; pop(flag_2=%d, flag_r=%d) => r%d\n", flag_2, flag_r, operand.reg - SLJIT_R0);
+#endif
+
 	return operand;
 }
 
@@ -454,11 +536,21 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 		"Pushing operand with unused register"
 	);
 
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; push(reg=r%d, flag_r=%d)\n", operand.reg - SLJIT_R0, flag_r);
+#endif
+
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? &ctx->rsp : &ctx->wsp;
 
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
 	buxn_jit_reg_t stack_ptr_reg = flag_r ? SLJIT_S(BUXN_JIT_S_RSP) : SLJIT_S(BUXN_JIT_S_WSP);
+
+	if (flag_r) {
+		ctx->rst_top = operand;
+	} else {
+		ctx->wst_top = operand;
+	}
 
 	if (operand.is_short) {
 		buxn_jit_value_t* hi = &stack[(*stack_ptr)++];
@@ -570,6 +662,15 @@ buxn_jit_load(
 		.is_short = buxn_jit_op_flag_2(ctx),
 		.reg = reg,
 	};
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; r%d = load(addr=0x%04x, flag_2=%d)\n",
+		result.reg - SLJIT_R0,
+		ctx->pc,
+		result.is_short
+	);
+#endif
 
 	buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
 	sljit_emit_op1(
@@ -633,6 +734,16 @@ buxn_jit_store(
 	buxn_jit_operand_t addr,
 	buxn_jit_operand_t value
 ) {
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; store(addr=r%d, value=r%d, flag_2=%d)\n",
+		addr.reg - SLJIT_R0,
+		value.reg - SLJIT_R0,
+		value.is_short
+	);
+#endif
+
 	buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, memory));
 
 	if (value.is_short) {
@@ -730,6 +841,10 @@ buxn_jit_save_state(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
 	struct sljit_jump* exit = NULL;
+#if BUXN_JIT_VERBOSE
+	int exit_id = 0;
+#endif
+
 	// TODO: Improve indirect (non-const) call
 	// Call into a trampoline helper function
 	if (target.semantics & BUXN_JIT_SEM_CONST) {
@@ -741,6 +856,9 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				target.reg, 0,
 				SLJIT_IMM, target.const_value
 			);
+#if BUXN_JIT_VERBOSE
+			fprintf(stderr, "  ; jump => here\n");
+#endif
 			sljit_set_label(jump, sljit_emit_label(ctx->compiler));
 
 			buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
@@ -757,13 +875,31 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				target.reg, 0,
 				SLJIT_IMM, target.const_value
 			);
+#if BUXN_JIT_VERBOSE
+			int skip_id = ctx->label_id++;
+			fprintf(stderr, "  ; jump => label%d\n", skip_id);
+#endif
 
+			// Discard mem base and cached stack tops
+			//
+			// This is because we can return from this call and continue execution
+			// The target is compiled by a different buxn_jit_ctx_t so upon return,
+			// the cached states will be invalid.
+			//
+			// Other remote jumps do not have to care about cache invalidation
+			// since execution will never return to this function.
 			ctx->mem_base = 0;
+			ctx->wst_top.reg = 0;
+			ctx->rst_top.reg = 0;
 			struct sljit_jump* call = sljit_emit_call(
 				ctx->compiler,
 				SLJIT_CALL_REG_ARG | SLJIT_REWRITABLE_JUMP,
 				SLJIT_ARGS0(32)
 			);
+#if BUXN_JIT_VERBOSE
+			int call_id = ctx->label_id++;
+			fprintf(stderr, "  ; jump => label%d\n", call_id);
+#endif
 
 			// If the return address is not as expected, trampoline
 			exit = sljit_emit_cmp(
@@ -772,9 +908,16 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				SLJIT_R0, 0,
 				SLJIT_IMM, return_addr
 			);
+#if BUXN_JIT_VERBOSE
+			exit_id = ctx->label_id++;
+			fprintf(stderr, "  ; jump => label%d\n", exit_id);
+#endif
 			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_R0, 0);
 
 			// Fallback stub in case we can't call for whatever reason
+#if BUXN_JIT_VERBOSE
+			fprintf(stderr, "  ; label%d:\n", call_id);
+#endif
 			sljit_set_label(call, sljit_emit_label(ctx->compiler));
 			sljit_emit_enter(
 				ctx->compiler,
@@ -785,6 +928,10 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				0
 			);
 			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, target.const_value);
+
+#if BUXN_JIT_VERBOSE
+			fprintf(stderr, "  ; label%d:\n", skip_id);
+#endif
 			sljit_set_label(skip_call, sljit_emit_label(ctx->compiler));
 
 			buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
@@ -801,12 +948,26 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 	sljit_emit_return(ctx->compiler, SLJIT_MOV32, target.reg, 0);
 
 	if (exit != NULL) {
+#if BUXN_JIT_VERBOSE
+		fprintf(stderr, "  ; label%d:\n", exit_id);
+#endif
 		sljit_set_label(exit, sljit_emit_label(ctx->compiler));
 	}
 }
 
 static void
 buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; jump(reg=r%d, addr=0x%04x, short=%d, return_addr=0x%04x)\n",
+		target.reg - SLJIT_R0,
+		target.const_value,
+		target.is_short,
+		return_addr
+	);
+#endif
+
 	if (target.is_short) {
 		buxn_jit_jump_abs(ctx, target, return_addr);
 	} else {
@@ -817,7 +978,16 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 				target.reg, 0,
 				SLJIT_IMM, 0
 			);
+#if BUXN_JIT_VERBOSE
+	int label_id = ctx->label_id++;
+	fprintf(stderr, "  ; jump => label%d\n", label_id);
+#endif
+
 			buxn_jit_next_opcode(ctx);
+
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; label%d:\n", label_id);
+#endif
 			sljit_set_label(skip_next_opcode, sljit_emit_label(ctx->compiler));
 		} else {
 			sljit_emit_op1(
@@ -848,14 +1018,25 @@ buxn_jit_conditional_jump(
 	buxn_jit_operand_t condition,
 	buxn_jit_operand_t target
 ) {
-	struct sljit_jump* skip_jump = sljit_emit_cmp(
+	sljit_emit_op2u(
 		ctx->compiler,
-		SLJIT_EQUAL,
+		SLJIT_AND | SLJIT_SET_Z,
 		condition.reg, 0,
-		SLJIT_IMM, 0
+		SLJIT_IMM, 0xff
 	);
 	buxn_jit_free_reg(ctx, condition.reg);
+
+	struct sljit_jump* skip_jump = sljit_emit_jump(ctx->compiler, SLJIT_ZERO);
+#if BUXN_JIT_VERBOSE
+	int label_id = ctx->label_id++;
+	fprintf(stderr, "  ; jump => label%d\n", label_id);
+#endif
+
 	buxn_jit_jump(ctx, target, 0);
+
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; label%d:\n", label_id);
+#endif
 	sljit_set_label(skip_jump, sljit_emit_label(ctx->compiler));
 }
 
@@ -871,14 +1052,23 @@ buxn_jit_finalize(buxn_jit_ctx_t* ctx) {
 }
 
 static buxn_jit_operand_t
-buxn_jit_immediate(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool is_short) {
+buxn_jit_immediate(buxn_jit_ctx_t* ctx, bool is_short) {
 	buxn_jit_operand_t imm = {
 		// We will assume that it is a constant, even if it can be overwritten.
 		// Jump opcodes will recheck the assumption so it is safe.
 		.semantics = BUXN_JIT_SEM_CONST,
 		.is_short = is_short,
-		.reg = reg,
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
+#if BUXN_JIT_VERBOSE
+	fprintf(
+		stderr,
+		"  ; r%d = rom(addr=0x%04x, flag_2=%d)\n",
+		imm.reg - SLJIT_R0,
+		ctx->pc,
+		imm.is_short
+	);
+#endif
 
 	if (is_short) {
 		uint8_t hi = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 0)];
@@ -975,8 +1165,8 @@ buxn_jit_immediate(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool is_short) {
 }
 
 static buxn_jit_operand_t
-buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
-	buxn_jit_operand_t target = buxn_jit_immediate(ctx, reg, true);
+buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
+	buxn_jit_operand_t target = buxn_jit_immediate(ctx, true);
 
 	target.const_value += ctx->pc;
 
@@ -1002,9 +1192,6 @@ static void
 buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
 	// If a boolean op is executed right before a JCI, do not push the result
 	// and just immediately use it.
-	// This optimization is very sensitive:
-	//
-	// * operand must not be the result of an operation that might overflow
 	uint8_t next_opcode = ctx->jit->vm->memory[ctx->pc];
 	if (
 		!operand.is_short
@@ -1014,7 +1201,7 @@ buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
 		!buxn_jit_op_flag_r(ctx)
 	) {
 		++ctx->pc;
-		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
+		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx);
 		buxn_jit_conditional_jump(ctx, operand, target);
 	} else {
 		buxn_jit_push(ctx, operand);
@@ -1058,8 +1245,10 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 	uint8_t size = buxn_jit_op_flag_2(ctx) ? 2 : 1;
 	if (buxn_jit_op_flag_r(ctx)) {
 		ctx->rsp -= size;
+		ctx->rst_top.reg = 0;
 	} else {
 		ctx->wsp -= size;
+		ctx->wst_top.reg = 0;
 	}
 
 	buxn_jit_reg_t stack_ptr_reg = buxn_jit_op_flag_r(ctx)
@@ -1353,6 +1542,8 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 	};
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
+	ctx->wst_top.reg = 0;
+	ctx->rst_top.reg = 0;
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_P,
@@ -1460,6 +1651,8 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
+	ctx->wst_top.reg = 0;
+	ctx->rst_top.reg = 0;
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_P,
@@ -1586,6 +1779,10 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 		b.reg, 0,
 		SLJIT_IMM, 0
 	);
+#if BUXN_JIT_VERBOSE
+	int set_zero_id = ctx->label_id++;
+	fprintf(stderr, "  ; jump => label%d\n", set_zero_id);
+#endif
 
 	sljit_emit_op1(
 		ctx->compiler,
@@ -1619,7 +1816,14 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 		BUXN_JIT_TMP(), 0
 	);
 	struct sljit_jump* end = sljit_emit_jump(ctx->compiler, SLJIT_JUMP);
+#if BUXN_JIT_VERBOSE
+	int end_id = ctx->label_id++;
+	fprintf(stderr, "  ; jump => label%d\n", end_id);
+#endif
 
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; label%d:\n", set_zero_id);
+#endif
 	sljit_set_label(set_zero, sljit_emit_label(ctx->compiler));
 	sljit_emit_op1(
 		ctx->compiler,
@@ -1628,6 +1832,9 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 		SLJIT_IMM, 0
 	);
 
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; label%d:\n", set_zero_id);
+#endif
 	sljit_set_label(end, sljit_emit_label(ctx->compiler));
 
 	buxn_jit_free_reg(ctx, a.reg);
@@ -1763,20 +1970,20 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, false, false);
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx);
 	buxn_jit_conditional_jump(ctx, condition, target);
 }
 
 static void
 buxn_jit_JMI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx);
 	buxn_jit_jump(ctx, target, 0);
 	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx);
 	buxn_jit_operand_t pc = {
 		.is_short = true,
 		.reg = buxn_jit_alloc_reg(ctx),
@@ -1793,14 +2000,14 @@ buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t lit = buxn_jit_immediate(ctx, buxn_jit_alloc_reg(ctx), buxn_jit_op_flag_2(ctx));
+	buxn_jit_operand_t lit = buxn_jit_immediate(ctx, buxn_jit_op_flag_2(ctx));
 	buxn_jit_push(ctx, lit);
 }
 
 // }}}
 
 static void
-buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
+buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	buxn_jit_ctx_t ctx = {
 		.jit = jit,
 		.pc = entry->pc,
@@ -1808,7 +2015,10 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 		.compiler = entry->compiler,
 	};
 
-	/*sljit_compiler_verbose(ctx.compiler, stderr);*/
+#if BUXN_JIT_VERBOSE
+	sljit_compiler_verbose(ctx.compiler, stderr);
+	fprintf(stderr, "  ; begin 0x%04x\n", entry->pc);
+#endif
 
 	// C-compatible prologue
 	sljit_emit_enter(
@@ -1844,6 +2054,10 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 	while (ctx.compiler != NULL) {
 		buxn_jit_next_opcode(&ctx);
 	}
+
+#if BUXN_JIT_VERBOSE
+	fprintf(stderr, "  ; end 0x%04x\n", entry->pc);
+#endif
 }
 
 static buxn_jit_block_t*
@@ -1889,9 +2103,34 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 		return;
 	}
 
+	ctx->used_registers = 0;
+	// Retain the top stack cache operand so we can avoid popping something that
+	// was recently pushed
+	if (ctx->wst_top.reg != 0) {
+		ctx->used_registers |= buxn_jit_reg_mask(ctx->wst_top.reg);
+	}
+	if (ctx->rst_top.reg != 0) {
+		ctx->used_registers |= buxn_jit_reg_mask(ctx->rst_top.reg);
+	}
+#if BUXN_JIT_VERBOSE
+	if (ctx->used_registers != 0) {
+		fprintf(stderr, "  ; Retained registers:");
+		for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
+			uint8_t mask = 1 << i;
+			if (ctx->used_registers & mask) {
+				fprintf(
+					stderr,
+					" r%d",
+					SLJIT_R(BUXN_JIT_R_OP_MIN + i) - SLJIT_R0
+				);
+			}
+		}
+		fprintf(stderr, "\n");
+	}
+#endif
+
 	uint8_t shadow_wsp;
 	uint8_t shadow_rsp;
-	ctx->used_registers = 0;
 	ctx->current_opcode = ctx->jit->vm->memory[ctx->pc++];
 
 	if (

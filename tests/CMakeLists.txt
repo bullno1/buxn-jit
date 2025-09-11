@@ -7,6 +7,7 @@ set(BUXN_JIT_TEST_SOURCES
 	"device.c"
 	"jump.c"
 	"opctest.c"
+	"optimization.c"
 )
 
 add_executable(buxn-jit-tests ${BUXN_JIT_TEST_SOURCES})

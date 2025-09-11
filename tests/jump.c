@@ -61,6 +61,9 @@ BTEST(jump, jmp) {
 	));
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x01);
+
 	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
 	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
