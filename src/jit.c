@@ -5,8 +5,14 @@
 #include <sljitLir.h>
 #include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 #define BHAMT_HASH_TYPE uint32_t
 #include "hamt.h"
+
+#ifndef BUXN_JIT_ASSERT
+#	include <assert.h>
+#	define BUXN_JIT_ASSERT(condition, msg) assert((condition) && (msg))
+#endif
 
 #define BUXN_JIT_ADDR_EQ(LHS, RHS) (LHS == RHS)
 #define BUXN_JIT_MEM() SLJIT_MEM2(SLJIT_R(BUXN_JIT_R_MEM_BASE), SLJIT_R(BUXN_JIT_R_MEM_OFFSET))
@@ -28,14 +34,20 @@ enum {
 enum {
 	BUXN_JIT_R_MEM_BASE = 0,
 	BUXN_JIT_R_MEM_OFFSET,
-	BUXN_JIT_R_SWSP,
-	BUXN_JIT_R_SRSP,
-	BUXN_JIT_R_OP_A,
-	BUXN_JIT_R_OP_B,
-	BUXN_JIT_R_OP_C,
 	BUXN_JIT_R_TMP,
 
+	BUXN_JIT_R_OP_0,
+	BUXN_JIT_R_OP_1,
+	BUXN_JIT_R_OP_2,
+	BUXN_JIT_R_OP_3,
+	BUXN_JIT_R_OP_4,
+
 	BUXN_JIT_R_COUNT,
+};
+
+enum {
+	BUXN_JIT_R_OP_MIN = BUXN_JIT_R_OP_0,
+	BUXN_JIT_R_OP_MAX = BUXN_JIT_R_OP_4,
 };
 
 #undef BUXN_OPCODE_NAME
@@ -133,6 +145,7 @@ typedef struct {
 	uint8_t* ersp;
 	buxn_jit_reg_t wsp_reg;
 	buxn_jit_reg_t rsp_reg;
+	uint8_t used_registers;
 } buxn_jit_ctx_t;
 
 // https://nullprogram.com/blog/2018/07/31/
@@ -185,6 +198,40 @@ buxn_jit_cleanup(buxn_jit_t* jit) {
 		}
 	}
 }
+
+static buxn_jit_reg_t
+buxn_jit_alloc_reg(buxn_jit_ctx_t* ctx) {
+	_Static_assert(
+		sizeof(ctx->used_registers) * CHAR_BIT >= (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1),
+		"buxn_jit_ctx_t::used_registers needs more bits"
+	);
+
+	for (int i = 0; i < (BUXN_JIT_R_OP_MAX - BUXN_JIT_R_OP_MIN + 1); ++i) {
+		uint8_t mask = 1 << i;
+		if ((ctx->used_registers & mask) == 0) {
+			ctx->used_registers |= mask;
+			return SLJIT_R(BUXN_JIT_R_OP_MIN + i);
+		}
+	}
+
+	BUXN_JIT_ASSERT(false, "Out of registers");
+	return 0;
+}
+
+static void
+buxn_jit_free_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
+	int reg_no = reg - SLJIT_R0;
+	BUXN_JIT_ASSERT(BUXN_JIT_R_OP_MIN <= reg_no && reg_no <= BUXN_JIT_R_OP_MAX, "Invalid register");
+	uint8_t mask = 1 << (reg_no - BUXN_JIT_R_OP_MIN);
+	BUXN_JIT_ASSERT((ctx->used_registers & mask), "Freeing unused register");
+	ctx->used_registers &= ~mask;
+}
+
+static void
+buxn_jit_finalize(buxn_jit_ctx_t* ctx);
+
+static void
+buxn_jit_next_opcode(buxn_jit_ctx_t* ctx);
 
 // JIT queue {{{
 
@@ -287,14 +334,17 @@ buxn_jit_set_mem_base(buxn_jit_ctx_t* ctx, sljit_sw base) {
 }
 
 static buxn_jit_operand_t
-buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_r) {
+buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, bool flag_2, bool flag_r) {
 	buxn_jit_value_t* stack = flag_r ? ctx->rst : ctx->wst;
 	uint8_t* stack_ptr = flag_r ? ctx->ersp : ctx->ewsp;
 
 	sljit_sw mem_base = flag_r ? SLJIT_OFFSETOF(buxn_vm_t, rs) : SLJIT_OFFSETOF(buxn_vm_t, ws);
 	buxn_jit_reg_t stack_ptr_reg = flag_r ? ctx->rsp_reg : ctx->wsp_reg;
 
-	buxn_jit_operand_t operand = { .is_short = flag_2, .reg = reg };
+	buxn_jit_operand_t operand = {
+		.is_short = flag_2,
+		.reg = buxn_jit_alloc_reg(ctx),
+	};
 
 	if (flag_2) {
 		buxn_jit_value_t lo = stack[--(*stack_ptr)];
@@ -326,7 +376,7 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			reg, 0,
+			operand.reg, 0,
 			BUXN_JIT_MEM(), 0
 		);
 
@@ -359,8 +409,8 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op2(
 			ctx->compiler,
 			SLJIT_OR,
-			reg, 0,
-			reg, 0,
+			operand.reg, 0,
+			operand.reg, 0,
 			BUXN_JIT_TMP(), 0
 		);
 	} else {
@@ -385,7 +435,7 @@ buxn_jit_pop_ex(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg, bool flag_2, bool flag_
 		sljit_emit_op1(
 			ctx->compiler,
 			SLJIT_MOV_U8,
-			reg, 0,
+			operand.reg, 0,
 			BUXN_JIT_MEM(), 0
 		);
 	}
@@ -491,8 +541,8 @@ buxn_jit_push_ex(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand, bool flag_r) {
 }
 
 static buxn_jit_operand_t
-buxn_jit_pop(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
-	return buxn_jit_pop_ex(ctx, reg, buxn_jit_op_flag_2(ctx), buxn_jit_op_flag_r(ctx));
+buxn_jit_pop(buxn_jit_ctx_t* ctx) {
+	return buxn_jit_pop_ex(ctx, buxn_jit_op_flag_2(ctx), buxn_jit_op_flag_r(ctx));
 }
 
 static void
@@ -563,6 +613,7 @@ buxn_jit_load(
 		);
 	}
 
+	buxn_jit_free_reg(ctx, addr.reg);
 	return result;
 }
 
@@ -629,6 +680,9 @@ buxn_jit_store(
 			value.reg, 0
 		);
 	}
+
+	buxn_jit_free_reg(ctx, addr.reg);
+	buxn_jit_free_reg(ctx, value.reg);
 }
 
 static void
@@ -662,9 +716,6 @@ buxn_jit_save_state(buxn_jit_ctx_t* ctx) {
 		SLJIT_S(BUXN_JIT_S_RSP), 0
 	);
 }
-
-static void
-buxn_jit_current_opcode(buxn_jit_ctx_t* ctx);
 
 static void
 buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_addr) {
@@ -756,8 +807,7 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 				target.reg, 0,
 				SLJIT_IMM, 0
 			);
-			buxn_jit_current_opcode(ctx);
-			ctx->pc += 1;
+			buxn_jit_next_opcode(ctx);
 			sljit_set_label(skip_next_opcode, sljit_emit_label(ctx->compiler));
 		} else {
 			sljit_emit_op1(
@@ -778,6 +828,8 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 			buxn_jit_jump_abs(ctx, target, return_addr);
 		}
 	}
+
+	buxn_jit_free_reg(ctx, target.reg);
 }
 
 static void
@@ -792,6 +844,7 @@ buxn_jit_conditional_jump(
 		condition.reg, 0,
 		SLJIT_IMM, 0
 	);
+	buxn_jit_free_reg(ctx, condition.reg);
 	buxn_jit_jump(ctx, target, 0);
 	sljit_set_label(skip_jump, sljit_emit_label(ctx->compiler));
 }
@@ -941,20 +994,17 @@ buxn_jit_maybe_JCI(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
 	// and just immediately use it.
 	// This optimization is very sensitive:
 	//
-	// * operand must not be assigned to BUXN_JIT_R_OP_B
 	// * operand must not be the result of an operation that might overflow
 	uint8_t next_opcode = ctx->jit->vm->memory[ctx->pc];
 	if (
 		!operand.is_short
-		&&
-		operand.reg != SLJIT_R(BUXN_JIT_R_OP_B)
 		&&
 		next_opcode == 0x20 /* JCI */
 		&&
 		!buxn_jit_op_flag_r(ctx)
 	) {
 		++ctx->pc;
-		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+		buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
 		buxn_jit_conditional_jump(ctx, operand, target);
 	} else {
 		buxn_jit_push(ctx, operand);
@@ -973,7 +1023,7 @@ buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_INC(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t operand = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t operand = buxn_jit_pop(ctx);
 	operand.semantics &= ~BUXN_JIT_SEM_BOOLEAN;
 
 	if (operand.semantics & BUXN_JIT_SEM_CONST) {
@@ -1017,24 +1067,24 @@ buxn_jit_POP(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_NIP(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
 	buxn_jit_POP(ctx);
 	buxn_jit_push(ctx, b);
 }
 
 static void
 buxn_jit_SWP(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 	buxn_jit_push(ctx, b);
 	buxn_jit_push(ctx, a);
 }
 
 static void
 buxn_jit_ROT(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t c = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_C));
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t c = buxn_jit_pop(ctx);
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 	buxn_jit_push(ctx, b);
 	buxn_jit_push(ctx, c);
 	buxn_jit_push(ctx, a);
@@ -1042,15 +1092,15 @@ buxn_jit_ROT(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_DUP(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 	buxn_jit_push(ctx, a);
 	buxn_jit_push(ctx, a);
 }
 
 static void
 buxn_jit_OVR(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 	buxn_jit_push(ctx, a);
 	buxn_jit_push(ctx, b);
 	buxn_jit_push(ctx, a);
@@ -1058,12 +1108,12 @@ buxn_jit_OVR(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1078,17 +1128,19 @@ buxn_jit_EQU(buxn_jit_ctx_t* ctx) {
 		SLJIT_EQUAL
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1103,17 +1155,19 @@ buxn_jit_NEQ(buxn_jit_ctx_t* ctx) {
 		SLJIT_NOT_EQUAL
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1128,17 +1182,19 @@ buxn_jit_GTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_GREATER
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.semantics = BUXN_JIT_SEM_BOOLEAN,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2u(
 		ctx->compiler,
@@ -1153,30 +1209,32 @@ buxn_jit_LTH(buxn_jit_ctx_t* ctx) {
 		SLJIT_LESS
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_JMP(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t target = buxn_jit_pop(ctx);
 	buxn_jit_jump(ctx, target, 0);
 	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_JCN(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
-	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_B), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t target = buxn_jit_pop(ctx);
+	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
 
 	buxn_jit_conditional_jump(ctx, condition, target);
 }
 
 static void
 buxn_jit_JSR(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t target = buxn_jit_pop(ctx);
 	buxn_jit_operand_t pc = {
 		.is_short = true,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_B),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op1(
 		ctx->compiler,
@@ -1190,27 +1248,27 @@ buxn_jit_JSR(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_STH(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 	buxn_jit_push_ex(ctx, a, !buxn_jit_op_flag_r(ctx));
 }
 
 static void
 buxn_jit_LDZ(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
 	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
 buxn_jit_STZ(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx);
 	buxn_jit_store(ctx, addr, value);
 }
 
 static void
 buxn_jit_LDR(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_S8,
@@ -1225,14 +1283,14 @@ buxn_jit_LDR(buxn_jit_ctx_t* ctx) {
 		SLJIT_IMM, ctx->pc
 	);
 	addr.is_short = true;
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
 	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
 buxn_jit_STR(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx);
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV_S8,
@@ -1252,15 +1310,15 @@ buxn_jit_STR(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_LDA(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), true, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_load(ctx, SLJIT_R(BUXN_JIT_R_OP_C), addr);
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, true, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_load(ctx, buxn_jit_alloc_reg(ctx), addr);
 	buxn_jit_maybe_JCI(ctx, value);
 }
 
 static void
 buxn_jit_STA(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), true, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, true, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx);
 	buxn_jit_store(ctx, addr, value);
 }
 
@@ -1278,10 +1336,10 @@ buxn_jit_dei2_helper(sljit_up vm, sljit_u32 addr) {
 
 static void
 buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
 	buxn_jit_operand_t result = {
 		.is_short = buxn_jit_op_flag_2(ctx),
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	buxn_jit_save_state(ctx);
 	ctx->mem_base = 0;
@@ -1312,6 +1370,8 @@ buxn_jit_DEI(buxn_jit_ctx_t* ctx) {
 		SLJIT_R0, 0
 	);
 	buxn_jit_load_state(ctx);
+	buxn_jit_free_reg(ctx, addr.reg);
+
 	buxn_jit_maybe_JCI(ctx, result);
 }
 
@@ -1328,8 +1388,8 @@ buxn_jit_deo2_helper(sljit_up vm, sljit_u32 addr) {
 
 static void
 buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, buxn_jit_op_flag_r(ctx));
-	buxn_jit_operand_t value = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t addr = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));
+	buxn_jit_operand_t value = buxn_jit_pop(ctx);
 
 	buxn_jit_set_mem_base(ctx, SLJIT_OFFSETOF(buxn_vm_t, device));
 	if (value.is_short) {
@@ -1411,12 +1471,15 @@ buxn_jit_DEO(buxn_jit_ctx_t* ctx) {
 			: SLJIT_FUNC_ADDR(buxn_jit_deo_helper)
 	);
 	buxn_jit_load_state(ctx);
+
+	buxn_jit_free_reg(ctx, addr.reg);
+	buxn_jit_free_reg(ctx, value.reg);
 }
 
 static void
 buxn_jit_ADD(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1424,7 +1487,7 @@ buxn_jit_ADD(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value + b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1434,13 +1497,15 @@ buxn_jit_ADD(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
 static void
 buxn_jit_SUB(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1448,7 +1513,7 @@ buxn_jit_SUB(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value - b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1458,13 +1523,15 @@ buxn_jit_SUB(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
 static void
 buxn_jit_MUL(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1472,7 +1539,7 @@ buxn_jit_MUL(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value * b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1482,20 +1549,22 @@ buxn_jit_MUL(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
 static void
 buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
 		.semantics = ((a.semantics & BUXN_JIT_SEM_CONST) && (b.semantics & BUXN_JIT_SEM_CONST))
 			? BUXN_JIT_SEM_CONST
 			: 0,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	if ((c.semantics & BUXN_JIT_SEM_CONST) && (b.const_value != 0)) {
 		c.const_value = a.const_value / b.const_value;
@@ -1545,18 +1614,21 @@ buxn_jit_DIV(buxn_jit_ctx_t* ctx) {
 	sljit_emit_op1(
 		ctx->compiler,
 		SLJIT_MOV,
-		SLJIT_R(BUXN_JIT_R_OP_C), 0,
+		c.reg, 0,
 		SLJIT_IMM, 0
 	);
 
 	sljit_set_label(end, sljit_emit_label(ctx->compiler));
+
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
 static void
 buxn_jit_AND(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1564,7 +1636,7 @@ buxn_jit_AND(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value & b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1574,13 +1646,15 @@ buxn_jit_AND(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1588,7 +1662,7 @@ buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value | b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1598,13 +1672,15 @@ buxn_jit_ORA(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop(ctx);
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = b.is_short,
@@ -1612,7 +1688,7 @@ buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = a.const_value ^ b.const_value,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1622,13 +1698,15 @@ buxn_jit_EOR(buxn_jit_ctx_t* ctx) {
 		b.reg, 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_maybe_JCI(ctx, c);
 }
 
 static void
 buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t b = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_B), false, buxn_jit_op_flag_r(ctx));;
-	buxn_jit_operand_t a = buxn_jit_pop(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t b = buxn_jit_pop_ex(ctx, false, buxn_jit_op_flag_r(ctx));;
+	buxn_jit_operand_t a = buxn_jit_pop(ctx);
 
 	buxn_jit_operand_t c = {
 		.is_short = a.is_short,
@@ -1636,7 +1714,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 			? BUXN_JIT_SEM_CONST
 			: 0,
 		.const_value = (a.const_value >> (b.const_value & 0x0f)) << ((b.const_value & 0xf0) >> 4),
-		.reg = SLJIT_R(BUXN_JIT_R_OP_C),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op2(
 		ctx->compiler,
@@ -1667,29 +1745,31 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 		BUXN_JIT_TMP(), 0
 	);
 
+	buxn_jit_free_reg(ctx, a.reg);
+	buxn_jit_free_reg(ctx, b.reg);
 	buxn_jit_push(ctx, c);
 }
 
 static void
 buxn_jit_JCI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, SLJIT_R(BUXN_JIT_R_OP_A), false, false);
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_B));
+	buxn_jit_operand_t condition = buxn_jit_pop_ex(ctx, false, false);
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
 	buxn_jit_conditional_jump(ctx, condition, target);
 }
 
 static void
 buxn_jit_JMI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
 	buxn_jit_jump(ctx, target, 0);
 	buxn_jit_finalize(ctx);
 }
 
 static void
 buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, SLJIT_R(BUXN_JIT_R_OP_A));
+	buxn_jit_operand_t target = buxn_jit_immediate_jump_target(ctx, buxn_jit_alloc_reg(ctx));
 	buxn_jit_operand_t pc = {
 		.is_short = true,
-		.reg = SLJIT_R(BUXN_JIT_R_OP_B),
+		.reg = buxn_jit_alloc_reg(ctx),
 	};
 	sljit_emit_op1(
 		ctx->compiler,
@@ -1703,18 +1783,11 @@ buxn_jit_JSI(buxn_jit_ctx_t* ctx) {
 
 static void
 buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t lit = buxn_jit_immediate(ctx, SLJIT_R(BUXN_JIT_R_OP_A), buxn_jit_op_flag_2(ctx));
+	buxn_jit_operand_t lit = buxn_jit_immediate(ctx, buxn_jit_alloc_reg(ctx), buxn_jit_op_flag_2(ctx));
 	buxn_jit_push(ctx, lit);
 }
 
 // }}}
-
-static void
-buxn_jit_current_opcode(buxn_jit_ctx_t* ctx) {
-	switch (ctx->current_opcode) {
-		BUXN_OPCODE_DISPATCH(BUXN_JIT_DISPATCH)
-	}
-}
 
 static void
 buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
@@ -1758,62 +1831,8 @@ buxn_jit_compile(buxn_jit_t* jit, buxn_jit_entry_t* entry) {
 	);
 	ctx.body_label = sljit_emit_label(ctx.compiler);
 
-	uint8_t shadow_wsp;
-	uint8_t shadow_rsp;
 	while (ctx.compiler != NULL) {
-		if (ctx.pc < 256) {
-			sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_IMM, ctx.pc);
-			buxn_jit_finalize(&ctx);
-			break;
-		}
-
-		ctx.current_opcode = jit->vm->memory[ctx.pc++];
-
-		if (
-			buxn_jit_op_flag_k(&ctx)
-			&&
-			ctx.current_opcode != 0x20  // JCI
-			&&
-			ctx.current_opcode != 0x40  // JMI
-			&&
-			ctx.current_opcode != 0x60  // JSI
-			&&
-			ctx.current_opcode != 0x80  // LIT
-			&&
-			ctx.current_opcode != 0xa0  // LIT2
-			&&
-			ctx.current_opcode != 0xc0  // LITr
-			&&
-			ctx.current_opcode != 0xe0  // LIT2r
-		) {
-			shadow_wsp = ctx.wsp;
-			shadow_rsp = ctx.rsp;
-			ctx.ewsp = &shadow_wsp;
-			ctx.ersp = &shadow_rsp;
-
-			sljit_emit_op1(
-				ctx.compiler,
-				SLJIT_MOV_U8,
-				SLJIT_R(BUXN_JIT_R_SWSP), 0,
-				SLJIT_S(BUXN_JIT_S_WSP), 0
-			);
-			sljit_emit_op1(
-				ctx.compiler,
-				SLJIT_MOV_U8,
-				SLJIT_R(BUXN_JIT_R_SRSP), 0,
-				SLJIT_S(BUXN_JIT_S_RSP), 0
-			);
-			ctx.wsp_reg = SLJIT_R(BUXN_JIT_R_SWSP);
-			ctx.rsp_reg = SLJIT_R(BUXN_JIT_R_SRSP);
-		} else {
-			ctx.ewsp = &ctx.wsp;
-			ctx.ersp = &ctx.rsp;
-
-			ctx.wsp_reg = SLJIT_S(BUXN_JIT_S_WSP);
-			ctx.rsp_reg = SLJIT_S(BUXN_JIT_S_RSP);
-		}
-
-		buxn_jit_current_opcode(&ctx);
+		buxn_jit_next_opcode(&ctx);
 	}
 }
 
@@ -1850,4 +1869,68 @@ buxn_jit(buxn_jit_t* jit, uint16_t pc) {
 	}
 
 	return block;
+}
+
+static void
+buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
+	if (ctx->pc < 256) {
+		sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, ctx->pc);
+		buxn_jit_finalize(ctx);
+		return;
+	}
+
+	uint8_t shadow_wsp;
+	uint8_t shadow_rsp;
+	ctx->used_registers = 0;
+	ctx->current_opcode = ctx->jit->vm->memory[ctx->pc++];
+
+	if (
+		buxn_jit_op_flag_k(ctx)
+		&&
+		ctx->current_opcode != 0x20  // JCI
+		&&
+		ctx->current_opcode != 0x40  // JMI
+		&&
+		ctx->current_opcode != 0x60  // JSI
+		&&
+		ctx->current_opcode != 0x80  // LIT
+		&&
+		ctx->current_opcode != 0xa0  // LIT2
+		&&
+		ctx->current_opcode != 0xc0  // LITr
+		&&
+		ctx->current_opcode != 0xe0  // LIT2r
+	) {
+		shadow_wsp = ctx->wsp;
+		shadow_rsp = ctx->rsp;
+		ctx->ewsp = &shadow_wsp;
+		ctx->ersp = &shadow_rsp;
+		buxn_jit_reg_t swsp_reg = buxn_jit_alloc_reg(ctx);
+		buxn_jit_reg_t srsp_reg = buxn_jit_alloc_reg(ctx);
+
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			swsp_reg, 0,
+			SLJIT_S(BUXN_JIT_S_WSP), 0
+		);
+		sljit_emit_op1(
+			ctx->compiler,
+			SLJIT_MOV_U8,
+			srsp_reg, 0,
+			SLJIT_S(BUXN_JIT_S_RSP), 0
+		);
+		ctx->wsp_reg = swsp_reg;
+		ctx->rsp_reg = srsp_reg;
+	} else {
+		ctx->ewsp = &ctx->wsp;
+		ctx->ersp = &ctx->rsp;
+
+		ctx->wsp_reg = SLJIT_S(BUXN_JIT_S_WSP);
+		ctx->rsp_reg = SLJIT_S(BUXN_JIT_S_RSP);
+	}
+
+	switch (ctx->current_opcode) {
+		BUXN_OPCODE_DISPATCH(BUXN_JIT_DISPATCH)
+	}
 }
