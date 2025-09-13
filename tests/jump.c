@@ -212,3 +212,28 @@ BTEST(jump, redirect) {
 	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 3);  // New block
 	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 1);  // Jump trampolined
 }
+
+BTEST(jump, boolean) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0102 GTHk JMP SWP POP"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
+}
+
+BTEST(jump, boolean_2) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0201 GTHk JMP BRK INC"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 2);
+}

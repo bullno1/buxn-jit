@@ -1318,6 +1318,9 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 		buxn_jit_jump_abs(ctx, target, return_addr);
 	} else {
 		if (target.semantics & BUXN_JIT_SEM_BOOLEAN) {
+			// Save the compiler to ensure that finalization will not happen
+			// due to the next opcode
+			struct sljit_compiler* compiler = ctx->compiler;
 			struct sljit_jump* skip_next_opcode = sljit_emit_cmp(
 				ctx->compiler,
 				SLJIT_NOT_EQUAL,
@@ -1334,6 +1337,8 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; label%d:\n", label_id);
 #endif
+			// Continue, regardless of the opcode after this
+			ctx->compiler = compiler;
 			sljit_set_label(skip_next_opcode, sljit_emit_label(ctx->compiler));
 		} else {
 			sljit_emit_op1(
@@ -1387,12 +1392,6 @@ buxn_jit_conditional_jump(
 
 static void
 buxn_jit_finalize(buxn_jit_ctx_t* ctx) {
-	buxn_jit_block_t* block = ctx->block;
-	block->fn = (buxn_jit_fn_t)sljit_generate_code(ctx->compiler, 0, NULL);
-	block->head_addr = sljit_get_label_addr(ctx->head_label);
-	block->body_addr = sljit_get_label_addr(ctx->body_label);
-	block->executable_offset = sljit_get_executable_offset(ctx->compiler);
-
 	ctx->compiler = NULL;
 }
 
@@ -1724,7 +1723,9 @@ static void
 buxn_jit_JMP(buxn_jit_ctx_t* ctx) {
 	buxn_jit_operand_t target = buxn_jit_pop(ctx);
 	buxn_jit_jump(ctx, target, 0);
-	buxn_jit_finalize(ctx);
+	if ((target.semantics & BUXN_JIT_SEM_BOOLEAN) == 0) {
+		buxn_jit_finalize(ctx);
+	}
 }
 
 static void
@@ -2349,6 +2350,12 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; }}}\n");
 #endif
+
+	buxn_jit_block_t* block = entry->block;
+	block->fn = (buxn_jit_fn_t)sljit_generate_code(entry->compiler, 0, NULL);
+	block->head_addr = sljit_get_label_addr(ctx.head_label);
+	block->body_addr = sljit_get_label_addr(ctx.body_label);
+	block->executable_offset = sljit_get_executable_offset(entry->compiler);
 }
 
 static buxn_jit_block_t*
