@@ -142,7 +142,7 @@ struct buxn_jit_entry_s {
 
 struct buxn_jit_s {
 	buxn_vm_t* vm;
-	buxn_jit_alloc_ctx_t* alloc_ctx;
+	buxn_jit_config_t config;
 	buxn_jit_stats_t stats;
 
 	buxn_jit_block_map_t blocks;
@@ -204,11 +204,20 @@ static buxn_jit_block_t*
 buxn_jit(buxn_jit_t* jit, uint16_t pc);
 
 buxn_jit_t*
-buxn_jit_init(buxn_vm_t* vm, buxn_jit_alloc_ctx_t* alloc_ctx) {
-	buxn_jit_t* jit = buxn_jit_alloc(alloc_ctx, sizeof(buxn_jit_t), _Alignof(buxn_jit_t));
+buxn_jit_init(buxn_vm_t* vm, buxn_jit_config_t* config) {
+	buxn_jit_config_t default_config = { 0 };
+	if (config == NULL) {
+		config = &default_config;
+	}
+
+	buxn_jit_t* jit = buxn_jit_alloc(
+		config->mem_ctx,
+		sizeof(buxn_jit_t),
+		_Alignof(buxn_jit_t)
+	);
 	*jit = (buxn_jit_t){
 		.vm = vm,
-		.alloc_ctx = alloc_ctx,
+		.config = *config,
 	};
 	return jit;
 }
@@ -271,7 +280,7 @@ buxn_jit_alloc_entry(buxn_jit_t* jit) {
 	buxn_jit_entry_t* entry = buxn_jit_dequeue(&jit->entry_pool);
 	if (entry == NULL) {
 		entry = buxn_jit_alloc(
-			jit->alloc_ctx,
+			jit->config.mem_ctx,
 			sizeof(buxn_jit_entry_t),
 			_Alignof(buxn_jit_entry_t)
 		);
@@ -288,7 +297,7 @@ buxn_jit_queue_block(buxn_jit_t* jit, uint16_t pc) {
 	BHAMT_SEARCH(jit->blocks.root, itr, block, hash, pc, BUXN_JIT_ADDR_EQ);
 	if (block == NULL) {
 		block = *itr = buxn_jit_alloc(
-			jit->alloc_ctx,
+			jit->config.mem_ctx,
 			sizeof(buxn_jit_block_t),
 			_Alignof(buxn_jit_block_t)
 		);

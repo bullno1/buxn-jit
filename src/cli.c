@@ -81,7 +81,9 @@ boot(int argc, const char* argv[], FILE* rom_file, uint32_t rom_size) {
 	barena_pool_init(&pool, 1);
 	barena_t arena;
 	barena_init(&arena, &pool);
-	buxn_jit_t* jit = buxn_jit_init(vm, (buxn_jit_alloc_ctx_t*)&arena);
+	buxn_jit_t* jit = buxn_jit_init(vm, &(buxn_jit_config_t){
+		.mem_ctx = &arena,
+	});
 	buxn_jit_stats_t* stats = buxn_jit_stats(jit);
 	devices.jit = jit;
 
@@ -236,8 +238,8 @@ buxn_console_handle_error(struct buxn_vm_s* vm, buxn_console_t* device, char c) 
 }
 
 void*
-buxn_jit_alloc(buxn_jit_alloc_ctx_t* ctx, size_t size, size_t alignment) {
-	return barena_memalign((barena_t*)ctx, size, alignment);
+buxn_jit_alloc(void* ctx, size_t size, size_t alignment) {
+	return barena_memalign(ctx, size, alignment);
 }
 
 #define BLIB_IMPLEMENTATION

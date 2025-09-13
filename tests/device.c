@@ -59,7 +59,9 @@ init_per_test(void) {
 	};
 	buxn_vm_reset(fixture.vm, BUXN_VM_RESET_ALL);
 
-	fixture.jit = buxn_jit_init(fixture.vm, (buxn_jit_alloc_ctx_t*)&fixture.arena);
+	fixture.jit = buxn_jit_init(fixture.vm, &(buxn_jit_config_t){
+		.mem_ctx = &fixture.arena,
+	});
 }
 
 static void
