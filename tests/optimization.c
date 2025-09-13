@@ -145,3 +145,18 @@ BTEST(optimization, deep_stack) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0800], 0x01);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0801], 0x02);
 }
+
+BTEST(optimization, half_stack) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#fe ;data STA2 BRK |0800 @data"
+	));
+	fixture.vm->wsp = 1;
+	fixture.vm->ws[0] = 0xca;
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0800], 0xca);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0801], 0xfe);
+}
