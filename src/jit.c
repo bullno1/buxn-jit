@@ -1339,6 +1339,10 @@ buxn_jit_jump(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t return_ad
 #endif
 			// Continue, regardless of the opcode after this
 			ctx->compiler = compiler;
+			// In case the previous opcode was executed, clear the stack cache
+			// so that the next opcode starts in a consistent state for both
+			// true and false branches
+			buxn_jit_clear_stack_caches(ctx);
 			sljit_set_label(skip_next_opcode, sljit_emit_label(ctx->compiler));
 		} else {
 			sljit_emit_op1(

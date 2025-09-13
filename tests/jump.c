@@ -237,3 +237,15 @@ BTEST(jump, boolean_2) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 2);
 }
+
+BTEST(jump, boolean_3) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0201 GTHk JMP SWP POP"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
+}
