@@ -132,3 +132,16 @@ BTEST(optimization, ORAk_2) {
 	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
 	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
+
+BTEST(optimization, deep_stack) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#01 #02 #03 #04 #05 #06 POP2 POP2 ;data STA2 BRK |0800 @data"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 0);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0800], 0x01);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->memory[0x0801], 0x02);
+}
