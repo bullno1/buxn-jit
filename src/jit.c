@@ -220,15 +220,17 @@ buxn_jit_stats(buxn_jit_t* jit) {
 
 void
 buxn_jit_execute(buxn_jit_t* jit, uint16_t pc) {
-	while (pc != 0) {
-		if (pc >= BUXN_RESET_VECTOR) {
-			buxn_jit_block_t* block = buxn_jit(jit, pc);
-			pc = (uint16_t)block->fn((uintptr_t)jit->vm);
-			jit->stats.num_bounces += (pc != 0);
-		} else {
-			buxn_vm_execute(jit->vm, pc);
-		}
-	}
+	buxn_jit_block_t* block = buxn_jit(jit, pc);
+	sljit_u32 next = block->fn((uintptr_t)jit->vm);
+	if (next > 0xffff) { return; }
+
+	pc = (uint16_t)next;
+	jit->stats.num_bounces += 1;
+	BUXN_JIT_ASSERT(pc <= 0xff, "Trampoline failed");
+
+	// The zero page is considered volatile and we will only interpret
+	// instead of compile
+	buxn_vm_execute(jit->vm, pc);
 }
 
 void
@@ -1193,7 +1195,6 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 	int exit_id = 0;
 #endif
 
-	// Call into a trampoline helper function
 	if (target.semantics & BUXN_JIT_SEM_CONST) {
 		if (return_addr == 0) {
 			// Recheck assumed constant value before jumping
@@ -1542,7 +1543,10 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
 static void
 buxn_jit_BRK(buxn_jit_ctx_t* ctx) {
 	buxn_jit_clear_stack_caches(ctx);
-	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0);
+	// A jump outside of the address range is used to signify a BRK.
+	// This is because while it almost never happens in practice, it is legal
+	// to jump to 0x0000 and even dynamically generate code there.
+	sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, 0x10000);
 	buxn_jit_finalize(ctx);
 }
 
@@ -2337,11 +2341,17 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 
 	// Trampoline for indirect jumps
 	struct sljit_label* lbl_trampoline = sljit_emit_label(ctx.compiler);
-	struct sljit_jump* jmp_return = sljit_emit_cmp(
+	struct sljit_jump* jmp_brk = sljit_emit_cmp(
 		ctx.compiler,
-		SLJIT_EQUAL,
+		SLJIT_GREATER,
 		SLJIT_R0, 0,
-		SLJIT_IMM, 0
+		SLJIT_IMM, 0xffff
+	);
+	struct sljit_jump* jmp_zero_page = sljit_emit_cmp(
+		ctx.compiler,
+		SLJIT_LESS,
+		SLJIT_R0, 0,
+		SLJIT_IMM, BUXN_RESET_VECTOR
 	);
 
 	sljit_emit_op1(
@@ -2370,7 +2380,10 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	);
 
 	sljit_set_label(sljit_emit_jump(ctx.compiler, SLJIT_JUMP), lbl_trampoline);
-	sljit_set_label(jmp_return, sljit_emit_label(ctx.compiler));
+
+	struct sljit_label* lbl_return = sljit_emit_label(ctx.compiler);
+	sljit_set_label(jmp_brk, lbl_return);
+	sljit_set_label(jmp_zero_page, lbl_return);
 
 	buxn_jit_save_state(&ctx);
 	sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_R0, 0);

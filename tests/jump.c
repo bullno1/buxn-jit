@@ -210,7 +210,7 @@ BTEST(jump, redirect) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x02);
 
 	BTEST_EXPECT_EQUAL("%d", stats->num_blocks, 3);  // New block
-	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 1);  // Jump trampolined
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 0);
 }
 
 BTEST(jump, boolean_not_taken) {
@@ -261,4 +261,19 @@ BTEST(jump, boolean_brk_taken) {
 	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 1);
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 2);
+}
+
+BTEST(jump, zero_page_trampoline) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#02 [ LIT INC ] .page STZ ;page JMP2 |01 @page"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 0x03);
+
+	buxn_jit_stats_t* stats = buxn_jit_stats(fixture.jit);
+	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 1);
 }
