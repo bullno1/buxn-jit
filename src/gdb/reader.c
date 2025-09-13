@@ -117,11 +117,17 @@ buxn_jit_gdb_unwind(
     struct gdb_unwind_callbacks* cb
 ) {
 	uintptr_t sp = buxn_jit_uintptr_from_gdb_reg_val(cb->reg_get(cb, DWARF_REG_SP));
+	uintptr_t pc = buxn_jit_uintptr_from_gdb_reg_val(cb->reg_get(cb, DWARF_REG_PC));
 	uintptr_t prev_pc, prev_sp;
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 	BUXN_JIT_CHECK(buxn_jit_read_target(cb, sp + sizeof(uintptr_t), &prev_pc, sizeof(prev_pc)));
 	prev_sp = sp + sizeof(uintptr_t) * 2;
+	if (buxn_jit_gdb_lookup_dbg_info(self, pc)) {
+		sp = prev_sp;
+		BUXN_JIT_CHECK(buxn_jit_read_target(cb, sp + sizeof(uintptr_t), &prev_pc, sizeof(prev_pc)));
+		prev_sp = sp + sizeof(uintptr_t) * 2;
+	}
 #elif defined(__arm__) || defined(_M_ARM) || defined(__aarch64__)
 	ret_addr = buxn_jit_uintptr_from_gdb_reg_val(cb->reg_get(cb, DWARF_REG_LR));
 	BUXN_JIT_CHECK(buxn_jit_read_target(cb, sp, &caller_sp, sizeof(caller_sp)));
