@@ -4,6 +4,7 @@
 #include <barena.h>
 #include <buxn/vm/vm.h>
 #include <buxn/vm/jit.h>
+#include <buxn/dbg/jit-gdb.h>
 #include <buxn/devices/console.h>
 #include <buxn/devices/system.h>
 #include <buxn/devices/datetime.h>
@@ -81,8 +82,13 @@ boot(int argc, const char* argv[], FILE* rom_file, uint32_t rom_size) {
 	barena_pool_init(&pool, 1);
 	barena_t arena;
 	barena_init(&arena, &pool);
+	buxn_jit_dbg_hook_t dbg_hook;
+	buxn_jit_init_gdb_hook(&dbg_hook, &(buxn_jit_gdb_hook_config_t){
+		.mem_ctx = &arena,
+	});
 	buxn_jit_t* jit = buxn_jit_init(vm, &(buxn_jit_config_t){
 		.mem_ctx = &arena,
+		.dbg_hook = &dbg_hook,
 	});
 	buxn_jit_stats_t* stats = buxn_jit_stats(jit);
 	devices.jit = jit;

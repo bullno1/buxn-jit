@@ -13,8 +13,18 @@ typedef struct {
 	int num_bounces;
 } buxn_jit_stats_t;
 
+typedef struct buxn_jit_dbg_hook_s {
+	void* userdata;
+	void (*register_block)(
+		void* userdata,
+		uint16_t addr,
+		uintptr_t start, size_t size
+	);
+} buxn_jit_dbg_hook_t;
+
 typedef struct {
 	void* mem_ctx;
+	buxn_jit_dbg_hook_t* dbg_hook;
 } buxn_jit_config_t;
 
 buxn_jit_t*
