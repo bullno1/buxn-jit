@@ -213,7 +213,7 @@ BTEST(jump, redirect) {
 	BTEST_EXPECT_EQUAL("%d", stats->num_bounces, 1);  // Jump trampolined
 }
 
-BTEST(jump, boolean) {
+BTEST(jump, boolean_not_taken) {
 	BTEST_ASSERT(buxn_asm_str(
 		&fixture.arena,
 		&fixture.vm->memory[BUXN_RESET_VECTOR],
@@ -225,7 +225,19 @@ BTEST(jump, boolean) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
 }
 
-BTEST(jump, boolean_2) {
+BTEST(jump, boolean_taken) {
+	BTEST_ASSERT(buxn_asm_str(
+		&fixture.arena,
+		&fixture.vm->memory[BUXN_RESET_VECTOR],
+		"#0201 GTHk JMP SWP POP"
+	));
+	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
+
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
+}
+
+BTEST(jump, boolean_brk_not_taken) {
 	BTEST_ASSERT(buxn_asm_str(
 		&fixture.arena,
 		&fixture.vm->memory[BUXN_RESET_VECTOR],
@@ -238,14 +250,15 @@ BTEST(jump, boolean_2) {
 	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 2);
 }
 
-BTEST(jump, boolean_3) {
+BTEST(jump, boolean_brk_taken) {
 	BTEST_ASSERT(buxn_asm_str(
 		&fixture.arena,
 		&fixture.vm->memory[BUXN_RESET_VECTOR],
-		"#0201 GTHk JMP SWP POP"
+		"#0102 GTHk JMP BRK INC"
 	));
 	buxn_jit_execute(fixture.jit, BUXN_RESET_VECTOR);
 
-	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 1);
-	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 2);
+	BTEST_EXPECT_EQUAL("%d", fixture.vm->wsp, 2);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[0], 1);
+	BTEST_EXPECT_EQUAL("0x%02x", fixture.vm->ws[1], 2);
 }
