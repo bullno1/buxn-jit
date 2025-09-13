@@ -398,7 +398,7 @@ buxn_jit_retain_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 static void
 buxn_jit_release_reg(buxn_jit_ctx_t* ctx, buxn_jit_reg_t reg) {
 	BUXN_JIT_ASSERT(
-		BUXN_JIT_R_OP_MIN <= reg && reg <= BUXN_JIT_R_OP_MAX,
+		SLJIT_R(BUXN_JIT_R_OP_MIN) <= reg && reg <= SLJIT_R(BUXN_JIT_R_OP_MAX),
 		"Invalid register"
 	);
 	BUXN_JIT_ASSERT(
@@ -1193,7 +1193,6 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 	int exit_id = 0;
 #endif
 
-	// TODO: Improve indirect (non-const) call
 	// Call into a trampoline helper function
 	if (target.semantics & BUXN_JIT_SEM_CONST) {
 		if (return_addr == 0) {
@@ -2297,6 +2296,12 @@ buxn_jit_LIT(buxn_jit_ctx_t* ctx) {
 
 // }}}
 
+static sljit_uw
+buxn_jit_translate_jump_addr(sljit_up jit, sljit_u32 target) {
+	buxn_jit_block_t* block = buxn_jit((buxn_jit_t*)jit, target);
+	return block->head_addr;
+}
+
 static void
 buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	buxn_jit_ctx_t ctx = {
@@ -2323,19 +2328,59 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 		0
 	);
 	buxn_jit_load_state(&ctx);
+
 	struct sljit_jump* call = sljit_emit_call(
 		ctx.compiler,
 		SLJIT_CALL_REG_ARG,
 		SLJIT_ARGS0(32)
 	);
+
+	// Trampoline for indirect jumps
+	struct sljit_label* lbl_trampoline = sljit_emit_label(ctx.compiler);
+	struct sljit_jump* jmp_return = sljit_emit_cmp(
+		ctx.compiler,
+		SLJIT_EQUAL,
+		SLJIT_R0, 0,
+		SLJIT_IMM, 0
+	);
+
+	sljit_emit_op1(
+		ctx.compiler,
+		SLJIT_MOV32,
+		SLJIT_R1, 0,
+		SLJIT_R0, 0
+	);
+	sljit_emit_op1(
+		ctx.compiler,
+		SLJIT_MOV_P,
+		SLJIT_R0, 0,
+		SLJIT_IMM, (sljit_sw)jit
+	);
+	sljit_emit_icall(
+		ctx.compiler,
+		SLJIT_CALL,
+		SLJIT_ARGS2(W, P, 32),
+		SLJIT_IMM, SLJIT_FUNC_ADDR(buxn_jit_translate_jump_addr)
+	);
+	sljit_emit_icall(
+		ctx.compiler,
+		SLJIT_CALL_REG_ARG,
+		SLJIT_ARGS0(32),
+		SLJIT_R0, 0
+	);
+
+	sljit_set_label(sljit_emit_jump(ctx.compiler, SLJIT_JUMP), lbl_trampoline);
+	sljit_set_label(jmp_return, sljit_emit_label(ctx.compiler));
+
 	buxn_jit_save_state(&ctx);
 	sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_R0, 0);
 
-	// sljit-specific fast calling convention
-	ctx.head_label = sljit_emit_label(ctx.compiler);
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; }}}\n");
 #endif
+
+	// sljit-specific fast calling convention
+	ctx.head_label = sljit_emit_label(ctx.compiler);
 	sljit_set_label(call, ctx.head_label);
 	sljit_emit_enter(
 		ctx.compiler,
