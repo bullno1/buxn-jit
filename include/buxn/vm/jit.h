@@ -24,7 +24,7 @@ typedef struct {
 } buxn_jit_config_t;
 
 buxn_jit_t*
-buxn_jit_init(struct buxn_vm_s* vm, buxn_jit_config_t* config);
+buxn_jit_init(struct buxn_vm_s* vm, const buxn_jit_config_t* config);
 
 buxn_jit_stats_t*
 buxn_jit_stats(buxn_jit_t* jit);

@@ -140,6 +140,7 @@ end:
 	fprintf(stderr, "Num bounces: %d\n", stats->num_bounces);
 
 	buxn_jit_cleanup(jit);
+	buxn_jit_cleanup_gdb_hook(&dbg_hook);
 	barena_reset(&arena);
 	barena_pool_cleanup(&pool);
 

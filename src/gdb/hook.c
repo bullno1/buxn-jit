@@ -1,5 +1,5 @@
-#include <buxn/vm/jit.h>
 #include <buxn/dbg/jit-gdb.h>
+#include <buxn/vm/jit.h>
 #include <threads.h>
 #include "dbg_info.h"
 
@@ -44,7 +44,18 @@ struct jit_descriptor __jit_debug_descriptor = {
 
 // }}}
 
-static buxn_jit_gdb_hook_config_t buxn_jit_gdb_default_config = { 0 };
+typedef struct buxn_jit_gdb_info_block_s buxn_jit_gdb_info_block_t;
+struct buxn_jit_gdb_info_block_s {
+	buxn_jit_gdb_info_block_t* next;
+
+	struct jit_code_entry entry;
+	buxn_jit_dbg_info_t debug_info;
+};
+
+typedef struct {
+	buxn_jit_gdb_info_block_t* blocks;
+	buxn_jit_gdb_hook_config_t config;
+} buxn_jit_dbg_hook_data_t;
 
 static once_flag buxn_jit_gdb_once = ONCE_FLAG_INIT;
 static mtx_t buxn_jit_gdb_hook_mtx;
@@ -60,39 +71,37 @@ buxn_jit_gdb_register(
 	uint16_t addr,
 	uintptr_t start, size_t size
 ) {
-	buxn_jit_gdb_hook_config_t* config = userdata;
+	buxn_jit_dbg_hook_data_t* hook_data = userdata;
 
-	buxn_jit_dbg_info_t* dbg_info = buxn_jit_alloc(
-		config->mem_ctx,
-		sizeof(buxn_jit_dbg_info_t),
-		_Alignof(buxn_jit_dbg_info_t)
+	buxn_jit_gdb_info_block_t* block = buxn_jit_alloc(
+		hook_data->config.mem_ctx,
+		sizeof(buxn_jit_gdb_info_block_t),
+		_Alignof(buxn_jit_gdb_info_block_t)
 	);
-	*dbg_info = (buxn_jit_dbg_info_t){
-		.addr = addr,
-		.start = start,
-		.size = size,
+	*block = (buxn_jit_gdb_info_block_t){
+		.debug_info = {
+			.addr = addr,
+			.start = start,
+			.size = size,
+		},
+		.entry = {
+			.symfile_addr = (const char*)&block->debug_info,
+			.symfile_size = sizeof(block->debug_info),
+		},
 	};
-
-	struct jit_code_entry* entry = buxn_jit_alloc(
-		config->mem_ctx,
-		sizeof(struct jit_code_entry),
-		_Alignof(struct jit_code_entry)
-	);
-	*entry = (struct jit_code_entry){
-		.symfile_addr = (const char*)dbg_info,
-		.symfile_size = sizeof(*dbg_info),
-	};
+	block->next = hook_data->blocks;
+	hook_data->blocks = block;
 
 	mtx_lock(&buxn_jit_gdb_hook_mtx);
 
-	entry->next_entry = __jit_debug_descriptor.first_entry;
-	if (entry->next_entry) {
-		entry->next_entry->prev_entry = entry;
+	block->entry.next_entry = __jit_debug_descriptor.first_entry;
+	if (block->entry.next_entry) {
+		block->entry.next_entry->prev_entry = &block->entry;
 	}
-	__jit_debug_descriptor.first_entry = entry;
+	__jit_debug_descriptor.first_entry = &block->entry;
 
 	__jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
-	__jit_debug_descriptor.relevant_entry = entry;
+	__jit_debug_descriptor.relevant_entry = &block->entry;
 	__jit_debug_register_code();
 	__jit_debug_descriptor.action_flag = JIT_NOACTION;
 
@@ -102,11 +111,53 @@ buxn_jit_gdb_register(
 void
 buxn_jit_init_gdb_hook(
 	struct buxn_jit_dbg_hook_s* hook,
-	buxn_jit_gdb_hook_config_t* config
+	const buxn_jit_gdb_hook_config_t* config
 ) {
 	call_once(&buxn_jit_gdb_once, buxn_jit_gdb_init);
+
+	buxn_jit_gdb_hook_config_t default_config = { 0 };
+	if (config == NULL) { config = &default_config; }
+
+	buxn_jit_dbg_hook_data_t* hook_data = buxn_jit_alloc(
+		config->mem_ctx,
+		sizeof(buxn_jit_dbg_hook_data_t),
+		_Alignof(buxn_jit_dbg_hook_data_t)
+	);
+	*hook_data = (buxn_jit_dbg_hook_data_t){
+		.config = *config,
+	};
+
 	*hook = (buxn_jit_dbg_hook_t){
 		.register_block = buxn_jit_gdb_register,
-		.userdata = config != NULL ? config : &buxn_jit_gdb_default_config,
+		.userdata = hook_data,
 	};
+}
+
+void
+buxn_jit_cleanup_gdb_hook(
+	struct buxn_jit_dbg_hook_s* hook
+) {
+	buxn_jit_dbg_hook_data_t* hook_data = hook->userdata;
+
+	mtx_lock(&buxn_jit_gdb_hook_mtx);
+
+	__jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+	for (
+		buxn_jit_gdb_info_block_t* itr = hook_data->blocks;
+		itr != NULL;
+		itr = itr->next
+	) {
+		if (itr->entry.next_entry) {
+			itr->entry.next_entry->prev_entry = itr->entry.prev_entry;
+		}
+		if (itr->entry.prev_entry) {
+			itr->entry.prev_entry->next_entry = itr->entry.next_entry;
+		}
+
+		__jit_debug_descriptor.relevant_entry = &itr->entry;
+		__jit_debug_register_code();
+	}
+	__jit_debug_descriptor.action_flag = JIT_NOACTION;
+
+	mtx_unlock(&buxn_jit_gdb_hook_mtx);
 }

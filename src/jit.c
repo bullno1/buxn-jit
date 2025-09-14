@@ -204,7 +204,7 @@ static buxn_jit_block_t*
 buxn_jit(buxn_jit_t* jit, uint16_t pc);
 
 buxn_jit_t*
-buxn_jit_init(buxn_vm_t* vm, buxn_jit_config_t* config) {
+buxn_jit_init(buxn_vm_t* vm, const buxn_jit_config_t* config) {
 	buxn_jit_config_t default_config = { 0 };
 	if (config == NULL) {
 		config = &default_config;
