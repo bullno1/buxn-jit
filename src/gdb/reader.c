@@ -95,9 +95,8 @@ buxn_jit_gdb_read(
 
 	struct gdb_object* obj = cb->object_open(cb);
 	struct gdb_symtab* symtab = cb->symtab_open(cb, obj, "buxn");
-	// TODO: free this
-	char* name_buf = malloc(12);
-	snprintf(name_buf, 11, "uxn:0x%04x", dbg_info.addr);
+	char name_buf[sizeof("uxn:0xffff")];
+	snprintf(name_buf, sizeof(name_buf), "uxn:0x%04x", dbg_info.addr);
 	cb->block_open(
 		cb, symtab,
 		NULL,
@@ -128,9 +127,6 @@ buxn_jit_gdb_unwind(
 		BUXN_JIT_CHECK(buxn_jit_read_target(cb, sp + sizeof(uintptr_t), &prev_pc, sizeof(prev_pc)));
 		prev_sp = sp + sizeof(uintptr_t) * 2;
 	}
-#elif defined(__arm__) || defined(_M_ARM) || defined(__aarch64__)
-	ret_addr = buxn_jit_uintptr_from_gdb_reg_val(cb->reg_get(cb, DWARF_REG_LR));
-	BUXN_JIT_CHECK(buxn_jit_read_target(cb, sp, &caller_sp, sizeof(caller_sp)));
 #else
 #	error "Unsupported architecture"
 #endif
