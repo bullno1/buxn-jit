@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <barray.h>
+#include <bminmax.h>
 #include <stdio.h>
 #include "dbg_info.h"
 
@@ -95,8 +96,22 @@ buxn_jit_gdb_read(
 
 	struct gdb_object* obj = cb->object_open(cb);
 	struct gdb_symtab* symtab = cb->symtab_open(cb, obj, "buxn");
-	char name_buf[sizeof("uxn:0xffff")];
-	snprintf(name_buf, sizeof(name_buf), "uxn:0x%04x", dbg_info.addr);
+
+	char name_buf[256];  // uxn names can't be this long
+	int len = snprintf(name_buf, sizeof(name_buf), "uxn:0x%04x", dbg_info.addr);
+	if (dbg_info.name.len > 0) {
+		enum gdb_status status = cb->target_read(
+			(uintptr_t)dbg_info.name.str,
+			&name_buf[len],
+			(int)BMIN(sizeof(name_buf) - 1 - len, dbg_info.name.len)
+		);
+		if (status == GDB_SUCCESS) {
+			name_buf[len + (int)dbg_info.name.len] = '\0';
+		} else {
+			name_buf[len] = '\0';
+		}
+	}
+
 	cb->block_open(
 		cb, symtab,
 		NULL,

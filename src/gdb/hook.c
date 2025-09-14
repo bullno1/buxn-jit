@@ -1,6 +1,8 @@
 #include <buxn/dbg/jit-gdb.h>
 #include <buxn/vm/jit.h>
+#include <stdbool.h>
 #include <threads.h>
+#include <string.h>
 #include "dbg_info.h"
 
 // gdb API {{{
@@ -89,6 +91,37 @@ buxn_jit_gdb_register(
 			.symfile_size = sizeof(block->debug_info),
 		},
 	};
+
+	const buxn_label_map_entry_t* label_map = NULL;
+	if (hook_data->config.label_map != NULL) {
+		// Find the closest preceding label
+		for (uint16_t i = 0; i < hook_data->config.label_map->size; ++i) {
+			const buxn_label_map_entry_t* entry = &hook_data->config.label_map->entries[i];
+			if (
+				entry->addr > 0x00ff  // Not in zero page
+				&&
+				(entry->name_len > 0 && entry->name[0] != '@')  // Not anonymous
+				&&
+				entry->addr <= addr
+				&&
+				entry->addr > (label_map != NULL ? label_map->addr : 0)
+			) {
+				label_map = entry;
+			}
+		}
+	}
+	if (label_map != NULL) {
+		char* name = buxn_jit_alloc(
+			hook_data->config.mem_ctx,
+			label_map->name_len + 1,
+			_Alignof(char)
+		);
+		name[0] = label_map->addr == addr ? '@' : '~';
+		memcpy(&name[1], label_map->name, label_map->name_len);
+		block->debug_info.name.str = name;
+		block->debug_info.name.len = label_map->name_len + 1;
+	}
+
 	block->next = hook_data->blocks;
 	hook_data->blocks = block;
 

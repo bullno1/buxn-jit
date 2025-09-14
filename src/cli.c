@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <barena.h>
+#include <barray.h>
+#include <string.h>
 #include <buxn/vm/vm.h>
 #include <buxn/vm/jit.h>
 #include <buxn/dbg/jit-gdb.h>
@@ -67,7 +69,11 @@ buxn_console_send_args_jit(struct buxn_vm_s* vm, buxn_console_t* device) {
 }
 
 static int
-boot(int argc, const char* argv[], FILE* rom_file, uint32_t rom_size) {
+boot(
+	int argc, const char* argv[],
+	const char* rom_path,
+	FILE* rom_file
+) {
 	int exit_code = 0;
 	vm_data_t devices = { 0 };
 
@@ -82,9 +88,49 @@ boot(int argc, const char* argv[], FILE* rom_file, uint32_t rom_size) {
 	barena_pool_init(&pool, 1);
 	barena_t arena;
 	barena_init(&arena, &pool);
+
+	// Try reading the symbol file
+	barray(buxn_label_map_entry_t) label_map_entries = NULL;
+	barray(char) str_buf = NULL;
+	char* sym_path = barena_memalign(&arena, strlen(rom_path) + 5, _Alignof(char));
+	snprintf(sym_path, sizeof(rom_path) + 5, "%s.sym", rom_path);
+	FILE* sym_file = fopen(sym_path, "rb");
+	if (sym_file != NULL) {
+		while (true) {
+			int hi = fgetc(sym_file);
+			if (hi == EOF) { break; }
+
+			int lo = fgetc(sym_file);
+			if (lo == EOF) { break; }
+
+			int ch;
+			barray_clear(str_buf);
+			while (true) {
+				ch = fgetc(sym_file);
+				if (ch == EOF || ch == 0) { break; }
+				barray_push(str_buf, ch, NULL);
+			}
+			if (ch == EOF) { break; }
+
+			char* name = barena_memalign(&arena, barray_len(str_buf), _Alignof(char));
+			memcpy(name, str_buf, barray_len(str_buf));
+			buxn_label_map_entry_t entry = {
+				.addr = (uint16_t)hi << 8 | (uint16_t)lo,
+				.name = name,
+				.name_len = barray_len(str_buf),
+			};
+			barray_push(label_map_entries, entry, NULL);
+		}
+		fclose(sym_file);
+	}
+
 	buxn_jit_dbg_hook_t dbg_hook;
 	buxn_jit_init_gdb_hook(&dbg_hook, &(buxn_jit_gdb_hook_config_t){
 		.mem_ctx = &arena,
+		.label_map = &(buxn_label_map_t){
+			.size = barray_len(label_map_entries),
+			.entries = label_map_entries,
+		},
 	});
 	buxn_jit_t* jit = buxn_jit_init(vm, &(buxn_jit_config_t){
 		.mem_ctx = &arena,
@@ -96,14 +142,10 @@ boot(int argc, const char* argv[], FILE* rom_file, uint32_t rom_size) {
 	// Read rom
 	{
 		uint8_t* read_pos = &vm->memory[BUXN_RESET_VECTOR];
-		if (rom_size == 0) {
-			while (read_pos < vm->memory + vm->config.memory_size) {
-				size_t num_bytes = fread(read_pos, 1, 1024, rom_file);
-				if (num_bytes == 0) { break; }
-				read_pos += num_bytes;
-			}
-		} else {
-			fread(read_pos, rom_size, 1, rom_file);
+		while (read_pos < vm->memory + vm->config.memory_size) {
+			size_t num_bytes = fread(read_pos, 1, 1024, rom_file);
+			if (num_bytes == 0) { break; }
+			read_pos += num_bytes;
 		}
 	}
 	fclose(rom_file);
@@ -139,6 +181,9 @@ end:
 	fprintf(stderr, "Num blocks: %d\n", stats->num_blocks);
 	fprintf(stderr, "Num bounces: %d\n", stats->num_bounces);
 
+	barray_free(NULL, str_buf);
+	barray_free(NULL, label_map_entries);
+
 	buxn_jit_cleanup(jit);
 	buxn_jit_cleanup_gdb_hook(&dbg_hook);
 	barena_reset(&arena);
@@ -157,13 +202,14 @@ main(int argc, const char* argv[]) {
 	int exit_code = 0;
 
 	FILE* rom_file;
-	if ((rom_file = fopen(argv[1], "rb")) == NULL) {
+	const char* rom_path = argv[1];
+	if ((rom_file = fopen(rom_path, "rb")) == NULL) {
 		perror("Error while opening rom file");
 		exit_code = 1;
 		goto end;
 	}
 
-	exit_code = boot(argc - 2, argv + 2, rom_file, 0);
+	exit_code = boot(argc - 2, argv + 2, rom_path, rom_file);
 
 end:
 	return exit_code;
@@ -251,3 +297,4 @@ buxn_jit_alloc(void* ctx, size_t size, size_t alignment) {
 
 #define BLIB_IMPLEMENTATION
 #include <barena.h>
+#include <barray.h>
