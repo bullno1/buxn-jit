@@ -1,6 +1,6 @@
 #include <buxn/vm/jit.h>
 #include <buxn/dbg/jit-gdb.h>
-#include <stdio.h>
+#include <threads.h>
 #include "dbg_info.h"
 
 // gdb API {{{
@@ -30,6 +30,7 @@ struct jit_descriptor {
 __attribute__((used,visibility("default"),noinline))
 void
 __jit_debug_register_code(void) {
+	// Prevent the optimizer from ever removing calls to this function
     __asm__ __volatile__ ("");
 }
 
@@ -44,6 +45,14 @@ struct jit_descriptor __jit_debug_descriptor = {
 // }}}
 
 static buxn_jit_gdb_hook_config_t buxn_jit_gdb_default_config = { 0 };
+
+static once_flag buxn_jit_gdb_once = ONCE_FLAG_INIT;
+static mtx_t buxn_jit_gdb_hook_mtx;
+
+static void
+buxn_jit_gdb_init(void) {
+	mtx_init(&buxn_jit_gdb_hook_mtx, mtx_plain);
+}
 
 static void
 buxn_jit_gdb_register(
@@ -73,6 +82,9 @@ buxn_jit_gdb_register(
 		.symfile_addr = (const char*)dbg_info,
 		.symfile_size = sizeof(*dbg_info),
 	};
+
+	mtx_lock(&buxn_jit_gdb_hook_mtx);
+
 	entry->next_entry = __jit_debug_descriptor.first_entry;
 	if (entry->next_entry) {
 		entry->next_entry->prev_entry = entry;
@@ -82,6 +94,9 @@ buxn_jit_gdb_register(
 	__jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
 	__jit_debug_descriptor.relevant_entry = entry;
 	__jit_debug_register_code();
+	__jit_debug_descriptor.action_flag = JIT_NOACTION;
+
+	mtx_unlock(&buxn_jit_gdb_hook_mtx);
 }
 
 void
@@ -89,7 +104,7 @@ buxn_jit_init_gdb_hook(
 	struct buxn_jit_dbg_hook_s* hook,
 	buxn_jit_gdb_hook_config_t* config
 ) {
-
+	call_once(&buxn_jit_gdb_once, buxn_jit_gdb_init);
 	*hook = (buxn_jit_dbg_hook_t){
 		.register_block = buxn_jit_gdb_register,
 		.userdata = config != NULL ? config : &buxn_jit_gdb_default_config,
