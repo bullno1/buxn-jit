@@ -94,21 +94,7 @@ buxn_jit_gdb_register(
 
 	const buxn_label_map_entry_t* label_map = NULL;
 	if (hook_data->config.label_map != NULL) {
-		// Find the closest preceding label
-		for (uint16_t i = 0; i < hook_data->config.label_map->size; ++i) {
-			const buxn_label_map_entry_t* entry = &hook_data->config.label_map->entries[i];
-			if (
-				entry->addr > 0x00ff  // Not in zero page
-				&&
-				(entry->name_len > 0 && entry->name[0] != '@')  // Not anonymous
-				&&
-				entry->addr <= addr
-				&&
-				entry->addr > (label_map != NULL ? label_map->addr : 0)
-			) {
-				label_map = entry;
-			}
-		}
+		label_map = buxn_pc_to_label(hook_data->config.label_map, addr);
 	}
 	if (label_map != NULL) {
 		char* name = buxn_jit_alloc(

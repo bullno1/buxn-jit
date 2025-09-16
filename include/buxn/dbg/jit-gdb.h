@@ -3,19 +3,9 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "label_map.h"
 
 struct buxn_jit_dbg_hook_s;
-
-typedef struct {
-	uint16_t addr;
-	size_t name_len;
-	const char* name;
-} buxn_label_map_entry_t;
-
-typedef struct {
-	uint16_t size;
-	buxn_label_map_entry_t* entries;
-} buxn_label_map_t;
 
 typedef struct {
 	void* mem_ctx;
