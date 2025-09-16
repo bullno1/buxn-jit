@@ -7,6 +7,8 @@
 #include <buxn/vm/vm.h>
 #include <buxn/jit.h>
 #include <buxn/jit/gdb.h>
+#include <buxn/jit/perf.h>
+#include <buxn/jit/composite_hook.h>
 #include <buxn/devices/console.h>
 #include <buxn/devices/system.h>
 #include <buxn/devices/datetime.h>
@@ -123,18 +125,30 @@ boot(
 		}
 		fclose(sym_file);
 	}
+	buxn_label_map_t label_map = {
+		.size = barray_len(label_map_entries),
+		.entries = label_map_entries,
+	};
 
-	buxn_jit_dbg_hook_t dbg_hook;
-	buxn_jit_init_gdb_hook(&dbg_hook, &(buxn_jit_gdb_hook_config_t){
+	buxn_jit_dbg_hook_t jit_hook, gdb_hook, perf_hook;
+
+	buxn_jit_init_gdb_hook(&gdb_hook, &(buxn_jit_gdb_hook_config_t){
 		.mem_ctx = &arena,
-		.label_map = &(buxn_label_map_t){
-			.size = barray_len(label_map_entries),
-			.entries = label_map_entries,
-		},
+		.label_map = &label_map,
 	});
+	buxn_jit_init_perf_hook(&perf_hook, &(buxn_jit_perf_hook_config_t){
+		.mem_ctx = &arena,
+		.label_map = &label_map,
+	});
+	buxn_jit_init_composite_hook(&jit_hook, (buxn_jit_dbg_hook_t*[]){
+		&gdb_hook,
+		&perf_hook,
+		NULL,
+	});
+
 	buxn_jit_t* jit = buxn_jit_init(vm, &(buxn_jit_config_t){
 		.mem_ctx = &arena,
-		.dbg_hook = &dbg_hook,
+		.dbg_hook = &jit_hook,
 	});
 	buxn_jit_stats_t* stats = buxn_jit_stats(jit);
 	devices.jit = jit;
@@ -186,7 +200,8 @@ end:
 	barray_free(NULL, label_map_entries);
 
 	buxn_jit_cleanup(jit);
-	buxn_jit_cleanup_gdb_hook(&dbg_hook);
+	buxn_jit_cleanup_perf_hook(&perf_hook);
+	buxn_jit_cleanup_gdb_hook(&gdb_hook);
 	barena_reset(&arena);
 	barena_pool_cleanup(&pool);
 
