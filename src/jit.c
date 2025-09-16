@@ -583,13 +583,6 @@ buxn_jit_stack_cache_pop(
 			buxn_jit_stack_cache_cell_t* top = &cache->cells[--cache->len];
 			if (top->value.is_short) {
 				// The top value is the right size, just return it
-				sljit_emit_op2(
-					ctx->compiler,
-					SLJIT_AND,
-					top->value.reg, 0,
-					top->value.reg, 0,
-					SLJIT_IMM, 0xffff
-				);
 				return top->value.reg;
 			} else {
 				// The top value is a byte, pop the high byte from the stack
@@ -650,13 +643,6 @@ buxn_jit_stack_cache_pop(
 			} else {
 				// The top value is the right size, just return it
 				cache->len -= 1;
-				sljit_emit_op2(
-					ctx->compiler,
-					SLJIT_AND,
-					top->value.reg, 0,
-					top->value.reg, 0,
-					SLJIT_IMM, 0x00ff
-				);
 				return top->value.reg;
 			}
 		}
@@ -1545,6 +1531,17 @@ buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
 	return target;
 }
 
+static inline void
+buxn_jit_wrap_around(buxn_jit_ctx_t* ctx, buxn_jit_operand_t operand) {
+	sljit_emit_op2(
+		ctx->compiler,
+		SLJIT_AND,
+		operand.reg, 0,
+		operand.reg, 0,
+		SLJIT_IMM, buxn_jit_op_flag_2(ctx) ? 0xffff : 0x00ff
+	);
+}
+
 // }}}
 
 // Opcodes {{{
@@ -1575,6 +1572,7 @@ buxn_jit_INC(buxn_jit_ctx_t* ctx) {
 		operand.reg, 0,
 		SLJIT_IMM, 1
 	);
+	buxn_jit_wrap_around(ctx, operand);
 
 	buxn_jit_push(ctx, operand);
 }
@@ -2018,6 +2016,7 @@ buxn_jit_ADD(buxn_jit_ctx_t* ctx) {
 		a.reg, 0,
 		b.reg, 0
 	);
+	buxn_jit_wrap_around(ctx, c);
 
 	buxn_jit_push(ctx, c);
 }
@@ -2042,6 +2041,7 @@ buxn_jit_SUB(buxn_jit_ctx_t* ctx) {
 		a.reg, 0,
 		b.reg, 0
 	);
+	buxn_jit_wrap_around(ctx, c);
 
 	buxn_jit_push(ctx, c);
 }
@@ -2066,6 +2066,7 @@ buxn_jit_MUL(buxn_jit_ctx_t* ctx) {
 		a.reg, 0,
 		b.reg, 0
 	);
+	buxn_jit_wrap_around(ctx, c);
 
 	buxn_jit_push(ctx, c);
 }
@@ -2266,6 +2267,7 @@ buxn_jit_SFT(buxn_jit_ctx_t* ctx) {
 		c.reg, 0,
 		BUXN_JIT_TMP(), 0
 	);
+	buxn_jit_wrap_around(ctx, c);
 
 	buxn_jit_push(ctx, c);
 }
