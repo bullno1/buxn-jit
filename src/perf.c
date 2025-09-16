@@ -144,6 +144,8 @@ buxn_jit_init_perf_hook(
 	char map_file_path[512];
 	snprintf(map_file_path, sizeof(map_file_path), "/tmp/perf-%d.map", pid);
 
+	// The filename must have this pattern
+	// https://github.com/torvalds/linux/blob/46a51f4f5edade43ba66b3c151f0e25ec8b69cb6/tools/perf/util/jitdump.c#L749-L753
 	char dump_file_path[512];
 	snprintf(dump_file_path, sizeof(dump_file_path), "/tmp/jit-%d.dump", pid);
 
