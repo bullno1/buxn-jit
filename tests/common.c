@@ -1,5 +1,5 @@
 #include <buxn/vm/vm.h>
-#include <buxn/vm/jit.h>
+#include <buxn/jit.h>
 #include <buxn/asm/asm.h>
 #include <buxn/devices/console.h>
 #include <blog.h>

@@ -1,8 +1,6 @@
 #ifndef BUXN_JIT_GDB_H
 #define BUXN_JIT_GDB_H
 
-#include <stdint.h>
-#include <stddef.h>
 #include "label_map.h"
 
 struct buxn_jit_dbg_hook_s;

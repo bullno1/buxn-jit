@@ -1,5 +1,5 @@
 // vim: set foldmethod=marker foldlevel=0:
-#include <buxn/vm/jit.h>
+#include <buxn/jit.h>
 #include <buxn/vm/vm.h>
 #include <buxn/vm/opcodes.h>
 #include <sljitLir.h>

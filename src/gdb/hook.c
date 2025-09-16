@@ -1,5 +1,5 @@
-#include <buxn/dbg/jit-gdb.h>
-#include <buxn/vm/jit.h>
+#include <buxn/jit/gdb.h>
+#include <buxn/jit.h>
 #include <stdbool.h>
 #include <threads.h>
 #include <string.h>

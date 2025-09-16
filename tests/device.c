@@ -1,7 +1,7 @@
 #include <btest.h>
 #include <barena.h>
 #include <buxn/vm/vm.h>
-#include <buxn/vm/jit.h>
+#include <buxn/jit.h>
 #include "common.h"
 
 static struct {

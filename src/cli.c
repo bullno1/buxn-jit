@@ -5,8 +5,8 @@
 #include <barray.h>
 #include <string.h>
 #include <buxn/vm/vm.h>
-#include <buxn/vm/jit.h>
-#include <buxn/dbg/jit-gdb.h>
+#include <buxn/jit.h>
+#include <buxn/jit/gdb.h>
 #include <buxn/devices/console.h>
 #include <buxn/devices/system.h>
 #include <buxn/devices/datetime.h>
