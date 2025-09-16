@@ -180,6 +180,7 @@ boot(
 end:
 	fprintf(stderr, "Num blocks: %d\n", stats->num_blocks);
 	fprintf(stderr, "Num bounces: %d\n", stats->num_bounces);
+	fprintf(stderr, "Code size: %zu\n", stats->code_size);
 
 	barray_free(NULL, str_buf);
 	barray_free(NULL, label_map_entries);

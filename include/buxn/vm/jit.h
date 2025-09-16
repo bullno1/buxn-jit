@@ -9,6 +9,7 @@ struct buxn_vm_s;
 typedef struct buxn_jit_s buxn_jit_t;
 
 typedef struct {
+	size_t code_size;
 	int num_blocks;
 	int num_bounces;
 } buxn_jit_stats_t;

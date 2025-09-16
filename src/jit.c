@@ -2430,11 +2430,14 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	block->body_addr = sljit_get_label_addr(ctx.body_label);
 	block->executable_offset = sljit_get_executable_offset(entry->compiler);
 
+	size_t code_size = sljit_get_generated_code_size(entry->compiler);
+	jit->stats.code_size += code_size;
+
 	if (jit->config.dbg_hook && jit->config.dbg_hook->register_block) {
 		jit->config.dbg_hook->register_block(
 			jit->config.dbg_hook->userdata,
 			entry->pc,
-			(uintptr_t)block->fn, sljit_get_generated_code_size(entry->compiler)
+			(uintptr_t)block->fn, code_size
 		);
 	}
 }
