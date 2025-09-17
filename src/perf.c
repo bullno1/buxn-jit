@@ -73,12 +73,13 @@ perf_jitdump_timestamp(void) {
 }
 
 static inline void
-buxn_jit_perf_register_block(
+buxn_jit_perf_end_block(
 	void* userdata,
-	uint16_t addr,
+	buxn_jit_hook_ctx_t* ctx,
 	uintptr_t code_start, size_t code_size
 ) {
 	buxn_jit_perf_hook_data_t* hook_data = userdata;
+	uint16_t addr = buxn_jit_hook_get_entry_addr(ctx);
 
 	const char* at_str = "@";
 	const char* label = "?";
@@ -136,7 +137,7 @@ buxn_jit_perf_register_block(
 
 void
 buxn_jit_init_perf_hook(
-	struct buxn_jit_dbg_hook_s* hook,
+	struct buxn_jit_hook_s* hook,
 	const buxn_jit_perf_hook_config_t* config
 ) {
 	int pid = getpid();
@@ -176,8 +177,10 @@ buxn_jit_init_perf_hook(
 		fflush(hook_data->dump_file);
 	}
 
-	hook->userdata = hook_data;
-	hook->register_block = buxn_jit_perf_register_block;
+	*hook = (buxn_jit_hook_t){
+		.userdata = hook_data,
+		.end_block = buxn_jit_perf_end_block,
+	};
 
 	// Apparently, the dump file only has to be mapped once to inform perf
 	// https://theunixzoo.co.uk/blog/2025-09-14-linux-perf-jit.html#fn:marker
@@ -190,7 +193,7 @@ buxn_jit_init_perf_hook(
 
 void
 buxn_jit_cleanup_perf_hook(
-	struct buxn_jit_dbg_hook_s* hook
+	struct buxn_jit_hook_s* hook
 ) {
 	buxn_jit_perf_hook_data_t* hook_data = hook->userdata;
 	if (hook_data->map_file != NULL) {

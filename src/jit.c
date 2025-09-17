@@ -169,6 +169,7 @@ typedef struct {
 	struct sljit_compiler* compiler;
 	struct sljit_label* head_label;
 	struct sljit_label* body_label;
+	uint16_t entry_pc;
 	uint16_t pc;
 	uint8_t current_opcode;
 	sljit_sw mem_base;
@@ -188,6 +189,11 @@ typedef struct {
 	int label_id;
 #endif
 } buxn_jit_ctx_t;
+
+struct buxn_jit_hook_ctx_s {
+	buxn_jit_ctx_t* jit_ctx;
+	struct sljit_label* current_label;
+};
 
 // https://nullprogram.com/blog/2018/07/31/
 static inline uint32_t
@@ -249,6 +255,25 @@ buxn_jit_cleanup(buxn_jit_t* jit) {
 			sljit_free_code((void*)itr->fn, NULL);
 		}
 	}
+}
+
+uint16_t
+buxn_jit_hook_get_entry_addr(buxn_jit_hook_ctx_t* ctx) {
+	return ctx->jit_ctx->entry_pc;
+}
+
+buxn_jit_addr_mark_t*
+buxn_jit_hook_mark_addr(buxn_jit_hook_ctx_t* ctx) {
+	if (ctx->current_label == NULL) {
+		ctx->current_label = sljit_emit_label(ctx->jit_ctx->compiler);
+	}
+
+	return (buxn_jit_addr_mark_t*)ctx->current_label;
+}
+
+uintptr_t
+buxn_jit_hook_resolve_addr(buxn_jit_hook_ctx_t* ctx, buxn_jit_addr_mark_t* mark) {
+	return sljit_get_label_addr((struct sljit_label*)mark);
 }
 
 static void
@@ -2321,6 +2346,7 @@ static void
 buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	buxn_jit_ctx_t ctx = {
 		.jit = jit,
+		.entry_pc = entry->pc,
 		.pc = entry->pc,
 		.block = entry->block,
 		.compiler = entry->compiler,
@@ -2416,6 +2442,14 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	);
 	ctx.body_label = sljit_emit_label(ctx.compiler);
 
+	buxn_jit_hook_t* hook = jit->config.hook;
+	if (hook && hook->begin_block) {
+		hook->begin_block(
+			hook->userdata,
+			&(buxn_jit_hook_ctx_t){ .jit_ctx = &ctx }
+		);
+	}
+
 	while (ctx.compiler != NULL) {
 		buxn_jit_next_opcode(&ctx);
 	}
@@ -2433,10 +2467,10 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 	size_t code_size = sljit_get_generated_code_size(entry->compiler);
 	jit->stats.code_size += code_size;
 
-	if (jit->config.dbg_hook && jit->config.dbg_hook->register_block) {
-		jit->config.dbg_hook->register_block(
-			jit->config.dbg_hook->userdata,
-			entry->pc,
+	if (hook && hook->end_block) {
+		hook->end_block(
+			hook->userdata,
+			&(buxn_jit_hook_ctx_t){ .jit_ctx = &ctx },
 			(uintptr_t)block->fn, code_size
 		);
 	}
@@ -2522,6 +2556,15 @@ buxn_jit_next_opcode(buxn_jit_ctx_t* ctx) {
 	uint8_t shadow_wsp;
 	uint8_t shadow_rsp;
 	ctx->current_opcode = ctx->jit->vm->memory[ctx->pc++];
+
+	buxn_jit_hook_t* hook = ctx->jit->config.hook;
+	if (hook && hook->jit_opcode) {
+		hook->jit_opcode(
+			hook->userdata,
+			&(buxn_jit_hook_ctx_t){ .jit_ctx = ctx },
+			ctx->pc - 1, ctx->current_opcode
+		);
+	}
 
 	if (buxn_jit_op_flag_k(ctx)) {
 #if BUXN_JIT_VERBOSE

@@ -130,7 +130,7 @@ boot(
 		.entries = label_map_entries,
 	};
 
-	buxn_jit_dbg_hook_t jit_hook, gdb_hook, perf_hook;
+	buxn_jit_hook_t jit_hook, gdb_hook, perf_hook;
 
 	buxn_jit_init_gdb_hook(&gdb_hook, &(buxn_jit_gdb_hook_config_t){
 		.mem_ctx = &arena,
@@ -140,7 +140,7 @@ boot(
 		.mem_ctx = &arena,
 		.label_map = &label_map,
 	});
-	buxn_jit_init_composite_hook(&jit_hook, (buxn_jit_dbg_hook_t*[]){
+	buxn_jit_init_composite_hook(&jit_hook, (buxn_jit_hook_t*[]){
 		&gdb_hook,
 		&perf_hook,
 		NULL,
@@ -148,7 +148,7 @@ boot(
 
 	buxn_jit_t* jit = buxn_jit_init(vm, &(buxn_jit_config_t){
 		.mem_ctx = &arena,
-		.dbg_hook = &jit_hook,
+		.hook = &jit_hook,
 	});
 	buxn_jit_stats_t* stats = buxn_jit_stats(jit);
 	devices.jit = jit;

@@ -68,12 +68,13 @@ buxn_jit_gdb_init(void) {
 }
 
 static void
-buxn_jit_gdb_register(
+buxn_jit_gdb_end_block(
 	void* userdata,
-	uint16_t addr,
+	buxn_jit_hook_ctx_t* ctx,
 	uintptr_t start, size_t size
 ) {
 	buxn_jit_dbg_hook_data_t* hook_data = userdata;
+	uint16_t addr = buxn_jit_hook_get_entry_addr(ctx);
 
 	buxn_jit_gdb_info_block_t* block = buxn_jit_alloc(
 		hook_data->config.mem_ctx,
@@ -129,7 +130,7 @@ buxn_jit_gdb_register(
 
 void
 buxn_jit_init_gdb_hook(
-	struct buxn_jit_dbg_hook_s* hook,
+	struct buxn_jit_hook_s* hook,
 	const buxn_jit_gdb_hook_config_t* config
 ) {
 	call_once(&buxn_jit_gdb_once, buxn_jit_gdb_init);
@@ -146,15 +147,15 @@ buxn_jit_init_gdb_hook(
 		.config = *config,
 	};
 
-	*hook = (buxn_jit_dbg_hook_t){
-		.register_block = buxn_jit_gdb_register,
+	*hook = (buxn_jit_hook_t){
+		.end_block = buxn_jit_gdb_end_block,
 		.userdata = hook_data,
 	};
 }
 
 void
 buxn_jit_cleanup_gdb_hook(
-	struct buxn_jit_dbg_hook_s* hook
+	struct buxn_jit_hook_s* hook
 ) {
 	buxn_jit_dbg_hook_data_t* hook_data = hook->userdata;
 

@@ -7,7 +7,7 @@
 
 #include "label_map.h"
 
-struct buxn_jit_dbg_hook_s;
+struct buxn_jit_hook_s;
 
 typedef struct {
 	void* mem_ctx;
@@ -16,13 +16,13 @@ typedef struct {
 
 void
 buxn_jit_init_perf_hook(
-	struct buxn_jit_dbg_hook_s* hook,
+	struct buxn_jit_hook_s* hook,
 	const buxn_jit_perf_hook_config_t* config
 );
 
 void
 buxn_jit_cleanup_perf_hook(
-	struct buxn_jit_dbg_hook_s* hook
+	struct buxn_jit_hook_s* hook
 );
 
 #endif
