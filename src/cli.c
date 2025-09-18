@@ -12,6 +12,10 @@
 #include <buxn/devices/console.h>
 #include <buxn/devices/system.h>
 #include <buxn/devices/datetime.h>
+#include <buxn/devices/file.h>
+#include <buxn/dbg/symtab.h>
+#define BSERIAL_STDIO
+#include <bserial.h>
 
 typedef struct {
 	buxn_console_t console;
@@ -130,6 +134,34 @@ boot(
 		.entries = label_map_entries,
 	};
 
+	// Try reading the debug file
+	char* dbg_path = barena_memalign(&arena, strlen(rom_path) + 5, _Alignof(char));
+	snprintf(dbg_path, sizeof(rom_path) + 5, "%s.dbg", rom_path);
+	FILE* dbg_file = fopen(dbg_path, "rb");
+	buxn_dbg_symtab_t* symtab = NULL;
+	if (dbg_file != NULL) {
+		bserial_stdio_in_t bserial_in;
+		buxn_dbg_symtab_reader_opts_t opts = {
+			.input = bserial_stdio_init_in(&bserial_in, dbg_file)
+		};
+
+		buxn_dbg_symtab_reader_t* reader = buxn_dbg_make_symtab_reader(
+			barena_malloc(&arena, buxn_dbg_symtab_reader_mem_size(&opts)),
+			&opts
+		);
+		if (buxn_dbg_read_symtab_header(reader) != BUXN_DBG_SYMTAB_OK) {
+			goto end_read;
+		}
+
+		symtab = barena_malloc(&arena, buxn_dbg_symtab_mem_size(reader));
+		if (buxn_dbg_read_symtab(reader, symtab) != BUXN_DBG_SYMTAB_OK) {
+			symtab = NULL;
+		}
+
+end_read:
+		fclose(dbg_file);
+	}
+
 	buxn_jit_hook_t jit_hook, gdb_hook, perf_hook;
 
 	buxn_jit_init_gdb_hook(&gdb_hook, &(buxn_jit_gdb_hook_config_t){
@@ -139,6 +171,7 @@ boot(
 	buxn_jit_init_perf_hook(&perf_hook, &(buxn_jit_perf_hook_config_t){
 		.mem_ctx = &arena,
 		.label_map = &label_map,
+		.symtab = symtab,
 	});
 	buxn_jit_init_composite_hook(&jit_hook, (buxn_jit_hook_t*[]){
 		&gdb_hook,
@@ -314,3 +347,4 @@ buxn_jit_alloc(void* ctx, size_t size, size_t alignment) {
 #define BLIB_IMPLEMENTATION
 #include <barena.h>
 #include <barray.h>
+#include <bserial.h>

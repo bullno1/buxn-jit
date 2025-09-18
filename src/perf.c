@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 #include <buxn/jit/perf.h>
 #include <buxn/jit.h>
+#include <buxn/dbg/symtab.h>
 #include <stdio.h>
+#include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <elf.h>
@@ -21,13 +23,7 @@
 #	warning "Unsupported architecture"
 #endif
 
-typedef struct {
-	FILE* map_file;
-	FILE* dump_file;
-	uint32_t pid;
-	uint32_t code_index;
-	buxn_jit_perf_hook_config_t config;
-} buxn_jit_perf_hook_data_t;
+#define BUXN_JIT_MAPPING_CHUNK_SIZE 16
 
 typedef struct {
 	uint32_t magic;
@@ -63,6 +59,46 @@ typedef struct {
 	uint64_t code_index;
 } perf_jitdump_code_load_t;
 
+typedef struct {
+	uint64_t code_addr;
+	uint64_t nr_entry;
+} perf_jitdump_debug_info_t;
+
+typedef struct {
+	uint64_t code_addr;
+	uint32_t line;
+	uint32_t discrim;
+} perf_jitdump_debug_entry_t;
+
+typedef struct {
+	buxn_jit_addr_mark_t* mark;
+	uint16_t addr;
+} buxn_jit_addr_mapping_t;
+
+typedef struct buxn_jit_addr_mapping_chunk_s {
+	struct buxn_jit_addr_mapping_chunk_s* next;
+
+	int len;
+	buxn_jit_addr_mapping_t	mappings[BUXN_JIT_MAPPING_CHUNK_SIZE];
+} buxn_jit_addr_mapping_chunk_t;
+
+typedef struct {
+	int len;
+
+	buxn_jit_addr_mapping_chunk_t* first;
+	buxn_jit_addr_mapping_chunk_t* last;
+} buxn_jit_addr_mapping_list_t;
+
+typedef struct {
+	FILE* map_file;
+	FILE* dump_file;
+	uint32_t pid;
+	uint32_t code_index;
+	buxn_jit_addr_mapping_list_t addr_mappings;
+	buxn_jit_addr_mapping_chunk_t* addr_mapping_chunk_pool;
+	buxn_jit_perf_hook_config_t config;
+} buxn_jit_perf_hook_data_t;
+
 static uint64_t
 perf_jitdump_timestamp(void) {
 	struct timespec ts;
@@ -70,6 +106,101 @@ perf_jitdump_timestamp(void) {
 		return 0; // error handling if needed
 	}
 	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static inline void
+buxn_jit_perf_jit_opcode(
+	void* userdata,
+	buxn_jit_hook_ctx_t* ctx,
+	uint16_t pc, uint8_t opcode
+) {
+	buxn_jit_perf_hook_data_t* hook_data = userdata;
+	buxn_jit_addr_mapping_chunk_t* last_chunk = hook_data->addr_mappings.last;
+	if (last_chunk == NULL || last_chunk->len == BUXN_JIT_MAPPING_CHUNK_SIZE) {
+		last_chunk = hook_data->addr_mapping_chunk_pool;
+
+		if (last_chunk == NULL) {
+			last_chunk = buxn_jit_alloc(
+				hook_data->config.mem_ctx,
+				sizeof(buxn_jit_addr_mapping_chunk_t),
+				_Alignof(buxn_jit_addr_mapping_chunk_t)
+			);
+		} else {
+			hook_data->addr_mapping_chunk_pool = last_chunk->next;
+		}
+		last_chunk->len = 0;
+		last_chunk->next = NULL;
+
+		if (hook_data->addr_mappings.first == NULL) {
+			hook_data->addr_mappings.first = last_chunk;
+		} else {
+			hook_data->addr_mappings.last->next = last_chunk;
+		}
+		hook_data->addr_mappings.last = last_chunk;
+	}
+
+	buxn_jit_addr_mapping_t* mapping = &last_chunk->mappings[last_chunk->len++];
+	mapping->mark = buxn_jit_hook_mark_addr(ctx);
+	mapping->addr = pc;
+	hook_data->addr_mappings.len += 1;
+}
+
+static const buxn_dbg_sym_t*
+buxn_dbg_find_symbol(
+	const buxn_dbg_symtab_t* symtab,
+	uint16_t address,
+	// Since we tend to display bytes sequentially in order, the symbols are
+	// usually next to each other too and there is no need to search the entire
+	// symtab.
+	// Instead, start searching from the previous position.
+	int* index_hint
+) {
+	int default_index_hint = 0;
+	if (index_hint == NULL) { index_hint = &default_index_hint; }
+
+	// Initial search with hint
+	uint32_t index = (uint32_t)*index_hint;
+	const buxn_dbg_sym_t* symbol = NULL;
+	for (; index < symtab->num_symbols; ++index) {
+		if (symtab->symbols[index].type != BUXN_DBG_SYM_OPCODE) { continue; }
+		if (
+			symtab->symbols[index].addr_min <= address
+			&& address <= symtab->symbols[index].addr_max
+		) {
+			symbol =  &symtab->symbols[index];
+			break;
+		}
+
+		if (symtab->symbols[index].addr_min > address) {
+			break;
+		}
+	}
+
+	if (symbol != NULL) {
+		*index_hint = index;
+		return symbol;
+	}
+
+	// Second search without hint
+	index = 0;
+	uint32_t hint = (uint32_t)*index_hint;
+	for (; index < hint; ++index) {
+		if (symtab->symbols[index].type != BUXN_DBG_SYM_OPCODE) { continue; }
+		if (
+			symtab->symbols[index].addr_min <= address
+			&& address <= symtab->symbols[index].addr_max
+		) {
+			symbol =  &symtab->symbols[index];
+			break;
+		}
+
+		if (symtab->symbols[index].addr_min > address) {
+			break;
+		}
+	}
+
+	*index_hint = index;
+	return symbol;
 }
 
 static inline void
@@ -109,6 +240,74 @@ buxn_jit_perf_end_block(
 	}
 
 	if (hook_data->dump_file != NULL) {
+		// Debug info record
+		if (hook_data->addr_mappings.len > 0) {
+			perf_jitdump_debug_info_t debug_info = {
+				.code_addr = code_start,
+				.nr_entry = hook_data->addr_mappings.len,
+			};
+			perf_jitdump_rec_hdr_t hdr = {
+				.id = JIT_CODE_DEBUG_INFO,
+				.timestamp = perf_jitdump_timestamp(),
+				.total_size = 0  // Initial size
+					+ sizeof(hdr)
+					+ sizeof(debug_info)
+			};
+
+			int index_hint = 0;
+			for (
+				buxn_jit_addr_mapping_chunk_t* itr = hook_data->addr_mappings.first;
+				itr != NULL;
+				itr = itr->next
+			) {
+				for (int i = 0; i < itr->len; ++i) {
+					const buxn_jit_addr_mapping_t* mapping = &itr->mappings[i];
+					const buxn_dbg_sym_t* sym = buxn_dbg_find_symbol(
+						hook_data->config.symtab,
+						mapping->addr,
+						&index_hint
+					);
+					hdr.total_size += sizeof(perf_jitdump_debug_entry_t);
+					hdr.total_size += strlen(sym->region.filename) + 1;
+				}
+			}
+
+			fwrite(&hdr, sizeof(hdr), 1, hook_data->dump_file);
+			fwrite(&debug_info, sizeof(debug_info), 1, hook_data->dump_file);
+
+			index_hint = 0;
+			for (
+				buxn_jit_addr_mapping_chunk_t* itr = hook_data->addr_mappings.first;
+				itr != NULL;
+			) {
+				buxn_jit_addr_mapping_chunk_t* next = itr->next;
+
+				for (int i = 0; i < itr->len; ++i) {
+					const buxn_jit_addr_mapping_t* mapping = &itr->mappings[i];
+					const buxn_dbg_sym_t* sym = buxn_dbg_find_symbol(
+						hook_data->config.symtab,
+						mapping->addr,
+						&index_hint
+					);
+					perf_jitdump_debug_entry_t entry = {
+						.code_addr = buxn_jit_hook_resolve_addr(ctx, mapping->mark),
+						.line = sym->region.range.start.line,
+						.discrim = sym->region.range.start.col - 1,
+					};
+					fwrite(&entry, sizeof(entry), 1, hook_data->dump_file);
+					const char* filename = sym->region.filename;
+					fwrite(filename, strlen(filename) + 1, 1, hook_data->dump_file);
+				}
+
+				itr->next = hook_data->addr_mapping_chunk_pool;
+				hook_data->addr_mapping_chunk_pool = itr;
+				itr = next;
+			}
+			hook_data->addr_mappings.first = hook_data->addr_mappings.last = NULL;
+			hook_data->addr_mappings.len = 0;
+		}
+
+		// Code load record
 		perf_jitdump_code_load_t code_load = {
 			.pid = hook_data->pid,
 			.tid = gettid(),
@@ -179,6 +378,7 @@ buxn_jit_init_perf_hook(
 
 	*hook = (buxn_jit_hook_t){
 		.userdata = hook_data,
+		.jit_opcode = config->symtab != NULL ? buxn_jit_perf_jit_opcode : NULL,
 		.end_block = buxn_jit_perf_end_block,
 	};
 

@@ -14,6 +14,7 @@ target_link_options(
 
 add_library(buxn-jit-perf-hook STATIC "perf.c")
 target_include_directories(buxn-jit-perf-hook PUBLIC "../include")
+target_link_libraries(buxn-jit-perf-hook PRIVATE buxn)
 
 add_library(buxn-jit-gdb-reader SHARED "gdb/reader.c")
 target_include_directories(buxn-jit-gdb-reader PUBLIC "../include")
@@ -26,5 +27,6 @@ target_link_libraries(buxn-jit-cli PRIVATE
 	buxn-jit-perf-hook
 	buxn-devices
 	buxn-vm
+	buxn-dbg-symtab
 	blibs
 )
