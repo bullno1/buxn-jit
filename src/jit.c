@@ -105,6 +105,7 @@ typedef struct {
 enum {
 	BUXN_JIT_SEM_CONST   = 1 << 0,
 	BUXN_JIT_SEM_BOOLEAN = 1 << 1,
+	BUXN_JIT_SEM_IMM_JMP = 1 << 2,
 };
 
 typedef struct buxn_jit_value_s buxn_jit_value_t;
@@ -1218,13 +1219,22 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 
 	if (target.semantics & BUXN_JIT_SEM_CONST) {
 		if (return_addr == 0) {
-			// Recheck assumed constant value before jumping
-			struct sljit_jump* jump = sljit_emit_cmp(
-				ctx->compiler,
-				SLJIT_EQUAL | SLJIT_REWRITABLE_JUMP,
-				target.reg, 0,
-				SLJIT_IMM, target.const_value
-			);
+			struct sljit_jump* jump;
+
+			if (target.semantics & BUXN_JIT_SEM_IMM_JMP) {
+				jump = sljit_emit_jump(
+					ctx->compiler,
+					SLJIT_JUMP | SLJIT_REWRITABLE_JUMP
+				);
+			} else {
+				// Recheck assumed constant value before jumping
+				jump = sljit_emit_cmp(
+					ctx->compiler,
+					SLJIT_EQUAL | SLJIT_REWRITABLE_JUMP,
+					target.reg, 0,
+					SLJIT_IMM, target.const_value
+				);
+			}
 #if BUXN_JIT_VERBOSE
 			fprintf(stderr, "  ; jump => here\n");
 #endif
@@ -1237,17 +1247,23 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 			entry->jump = jump;
 			buxn_jit_enqueue(&ctx->jit->link_queue, entry);
 		} else {
-			// Recheck assumed constant value before calling
-			struct sljit_jump* skip_call = sljit_emit_cmp(
-				ctx->compiler,
-				SLJIT_NOT_EQUAL,
-				target.reg, 0,
-				SLJIT_IMM, target.const_value
-			);
+			struct sljit_jump* skip_call = NULL;
 #if BUXN_JIT_VERBOSE
-			int skip_id = ctx->label_id++;
-			fprintf(stderr, "  ; jump => label%d\n", skip_id);
+			int skip_id = 0;
 #endif
+			if ((target.semantics & BUXN_JIT_SEM_IMM_JMP) == 0) {
+				// Recheck assumed constant value before calling
+				skip_call = sljit_emit_cmp(
+					ctx->compiler,
+					SLJIT_NOT_EQUAL,
+					target.reg, 0,
+					SLJIT_IMM, target.const_value
+				);
+#if BUXN_JIT_VERBOSE
+				skip_id = ctx->label_id++;
+				fprintf(stderr, "  ; jump => label%d\n", skip_id);
+#endif
+			}
 
 			// This is because we can return from this call and continue execution
 			// The target is compiled by a different buxn_jit_ctx_t so upon return,
@@ -1262,10 +1278,6 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				SLJIT_ARGS0(32)
 			);
 			sljit_set_label(call, ctx->call_fallback);
-#if BUXN_JIT_VERBOSE
-			int call_id = ctx->label_id++;
-			fprintf(stderr, "  ; jump => label%d\n", call_id);
-#endif
 
 			// If the return address is not as expected, trampoline
 			exit = sljit_emit_cmp(
@@ -1280,14 +1292,12 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 #endif
 			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_R0, 0);
 
+			if (skip_call != NULL) {
 #if BUXN_JIT_VERBOSE
-			fprintf(stderr, "  ; label%d:\n", call_id);
+				fprintf(stderr, "  ; label%d:\n", skip_id);
 #endif
-
-#if BUXN_JIT_VERBOSE
-			fprintf(stderr, "  ; label%d:\n", skip_id);
-#endif
-			sljit_set_label(skip_call, sljit_emit_label(ctx->compiler));
+				sljit_set_label(skip_call, sljit_emit_label(ctx->compiler));
+			}
 
 			buxn_jit_entry_t* entry = buxn_jit_alloc_entry(ctx->jit);
 			entry->link_type = BUXN_JIT_LINK_TO_HEAD;
@@ -1525,23 +1535,29 @@ buxn_jit_immediate(buxn_jit_ctx_t* ctx, bool is_short) {
 
 static buxn_jit_operand_t
 buxn_jit_immediate_jump_target(buxn_jit_ctx_t* ctx) {
-	buxn_jit_operand_t target = buxn_jit_immediate(ctx, true);
+	// Immediate jump target should not be rewritten using door
+	buxn_jit_operand_t target = {
+		.semantics = BUXN_JIT_SEM_CONST | BUXN_JIT_SEM_IMM_JMP,
+		.is_short = true,
+		// A register is not needed as we will never use it
+		.reg = SLJIT_R(BUXN_JIT_R_TMP),
+	};
+	uint8_t hi = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 0)];
+	uint8_t lo = ctx->jit->vm->memory[(uint16_t)(ctx->pc + 1)];
+	target.const_value = (uint16_t)hi << 8 | (uint16_t)lo;
+	ctx->pc += 2;
 
 	target.const_value += ctx->pc;
 
-	sljit_emit_op2(
+	// Assinging to an unused register makes the tak benchmark run faster.
+	// I have no idea why.
+	// There is some weird scheduling thing going on.
+	// How do CPUs even work?
+	sljit_emit_op1(
 		ctx->compiler,
-		SLJIT_ADD,
+		SLJIT_MOV_U16,
 		target.reg, 0,
-		target.reg, 0,
-		SLJIT_IMM, ctx->pc
-	);
-	sljit_emit_op2(
-		ctx->compiler,
-		SLJIT_AND,
-		target.reg, 0,
-		target.reg, 0,
-		SLJIT_IMM, 0xffff
+		SLJIT_IMM, target.const_value
 	);
 
 	return target;
