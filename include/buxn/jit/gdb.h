@@ -8,6 +8,7 @@ struct buxn_jit_hook_s;
 typedef struct {
 	void* mem_ctx;
 	const buxn_label_map_t* label_map;
+	const struct buxn_dbg_symtab_s* symtab;
 } buxn_jit_gdb_hook_config_t;
 
 void

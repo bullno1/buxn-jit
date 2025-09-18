@@ -4,6 +4,7 @@ target_link_libraries(buxn-jit PRIVATE buxn sljit)
 
 add_library(buxn-jit-gdb-hook STATIC "gdb/hook.c")
 target_include_directories(buxn-jit-gdb-hook PUBLIC "../include")
+target_link_libraries(buxn-jit-gdb-hook PRIVATE buxn)
 # When using mold linker with `--separate-debug-file`, gdb will not be able to
 # locate debug symbol for this global variable even with visibility("default")
 # However, if the symbol is exported, it will be able to.

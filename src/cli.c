@@ -167,6 +167,7 @@ end_read:
 	buxn_jit_init_gdb_hook(&gdb_hook, &(buxn_jit_gdb_hook_config_t){
 		.mem_ctx = &arena,
 		.label_map = &label_map,
+		.symtab = symtab,
 	});
 	buxn_jit_init_perf_hook(&perf_hook, &(buxn_jit_perf_hook_config_t){
 		.mem_ctx = &arena,

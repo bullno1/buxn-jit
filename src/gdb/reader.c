@@ -94,9 +94,6 @@ buxn_jit_gdb_read(
 	memcpy(&dbg_info, memory, sizeof(dbg_info));
 	barray_push(reader->dbg_info, dbg_info, NULL);
 
-	struct gdb_object* obj = cb->object_open(cb);
-	struct gdb_symtab* symtab = cb->symtab_open(cb, obj, "buxn");
-
 	char name_buf[256];  // uxn names can't be this long
 	int len = snprintf(name_buf, sizeof(name_buf), "uxn:0x%04x", dbg_info.addr);
 	if (dbg_info.name.len > 0) {
@@ -112,14 +109,105 @@ buxn_jit_gdb_read(
 		}
 	}
 
-	cb->block_open(
-		cb, symtab,
-		NULL,
-		dbg_info.start,
-		dbg_info.start + dbg_info.size,
-		name_buf
-	);
-	cb->symtab_close(cb, symtab);
+	struct gdb_object* obj = cb->object_open(cb);
+	if (dbg_info.num_line_mappings > 0) {
+		char* filename = NULL;
+		uintptr_t previous_file = 0;
+		struct gdb_symtab* symtab = cb->symtab_open(cb, obj, "uxn");
+		uintptr_t code_start = dbg_info.start;
+		barray(struct gdb_line_mapping) gdb_mappings = NULL;
+
+		buxn_jit_dbg_line_mapping_t* mappings = malloc(
+			sizeof(buxn_jit_dbg_line_mapping_t) * dbg_info.num_line_mappings
+		);
+		enum gdb_status status = cb->target_read(
+			(uintptr_t)dbg_info.mappings,
+			mappings,
+			sizeof(buxn_jit_dbg_line_mapping_t) * dbg_info.num_line_mappings
+		);
+		if (status != GDB_SUCCESS) { goto end_read_mapping; }
+
+		for (int i = 0; i < dbg_info.num_line_mappings; ++i) {
+			const buxn_jit_dbg_line_mapping_t* mapping = &mappings[i];
+			// Moved to a different file
+			if ((uintptr_t)mapping->file.str != previous_file) {
+				// Close the previous symtab and make a new one
+				if (symtab != NULL) {
+					if (barray_len(gdb_mappings) > 0) {
+						cb->line_mapping_add(
+							cb, symtab,
+							barray_len(gdb_mappings),
+							gdb_mappings
+						);
+						barray_clear(gdb_mappings);
+					}
+
+					cb->block_open(
+						cb, symtab,
+						NULL,
+						code_start,
+						mapping->pc - 1,
+						name_buf
+					);
+					cb->symtab_close(cb, symtab);
+				}
+
+				filename = realloc(filename, mapping->file.len + 1);
+				enum gdb_status status = cb->target_read(
+					(uintptr_t)mapping->file.str,
+					filename,
+					mapping->file.len
+				);
+				if (status != GDB_SUCCESS) { goto end_read_mapping; }
+				filename[mapping->file.len] = '\0';
+
+				symtab = cb->symtab_open(cb, obj, filename);
+				previous_file = (uintptr_t)mapping->file.str;
+				code_start = mapping->pc;
+			}
+
+			struct gdb_line_mapping gdb_mapping = {
+				.line = mapping->line,
+				.pc = mapping->pc,
+			};
+			barray_push(gdb_mappings, gdb_mapping, NULL);
+		}
+
+end_read_mapping:
+		if (symtab != NULL) {
+			if (barray_len(gdb_mappings) > 0) {
+				cb->line_mapping_add(
+					cb, symtab,
+					barray_len(gdb_mappings),
+					gdb_mappings
+				);
+				barray_clear(gdb_mappings);
+			}
+			cb->block_open(
+				cb, symtab,
+				NULL,
+				code_start,
+				dbg_info.start + dbg_info.size,
+				name_buf
+			);
+			cb->symtab_close(cb, symtab);
+		}
+
+		free(mappings);
+		free(filename);
+		barray_free(NULL, gdb_mappings);
+	} else {
+		struct gdb_symtab* symtab = cb->symtab_open(cb, obj, "uxn");
+		cb->block_open(
+			cb, symtab,
+			NULL,
+			dbg_info.start,
+			dbg_info.start + dbg_info.size,
+			name_buf
+		);
+		cb->symtab_close(cb, symtab);
+	}
+
 	cb->object_close(cb, obj);
 
 	return GDB_SUCCESS;

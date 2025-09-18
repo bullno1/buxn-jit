@@ -4,6 +4,7 @@
 #include <threads.h>
 #include <string.h>
 #include "dbg_info.h"
+#include "../addr_mapping.h"
 
 // gdb API {{{
 
@@ -57,6 +58,8 @@ struct buxn_jit_gdb_info_block_s {
 typedef struct {
 	buxn_jit_gdb_info_block_t* blocks;
 	buxn_jit_gdb_hook_config_t config;
+	buxn_jit_addr_mapping_list_t addr_mappings;
+	buxn_jit_addr_mapping_chunk_t* addr_mapping_chunk_pool;
 } buxn_jit_dbg_hook_data_t;
 
 static once_flag buxn_jit_gdb_once = ONCE_FLAG_INIT;
@@ -65,6 +68,59 @@ static mtx_t buxn_jit_gdb_hook_mtx;
 static void
 buxn_jit_gdb_init(void) {
 	mtx_init(&buxn_jit_gdb_hook_mtx, mtx_plain);
+}
+
+static inline void
+buxn_jit_gdb_jit_opcode(
+	void* userdata,
+	buxn_jit_hook_ctx_t* ctx,
+	uint16_t pc, uint8_t opcode
+) {
+	// Only record the address of opcodes that have a call and return pattern
+	uint8_t base_opcode = opcode & 0x1f;
+	if (!(
+		pc == buxn_jit_hook_get_entry_addr(ctx)  // Record the entry too
+		||
+		opcode == 0x60  // JSI
+		||
+		base_opcode == 0x0e  // JSR
+		||
+		base_opcode == 0x16  // DEI
+		||
+		base_opcode == 0x17  // DE0
+	)) {
+		return;
+	}
+
+	buxn_jit_dbg_hook_data_t* hook_data = userdata;
+	buxn_jit_addr_mapping_chunk_t* last_chunk = hook_data->addr_mappings.last;
+	if (last_chunk == NULL || last_chunk->len == BUXN_JIT_MAPPING_CHUNK_SIZE) {
+		last_chunk = hook_data->addr_mapping_chunk_pool;
+
+		if (last_chunk == NULL) {
+			last_chunk = buxn_jit_alloc(
+				hook_data->config.mem_ctx,
+				sizeof(buxn_jit_addr_mapping_chunk_t),
+				_Alignof(buxn_jit_addr_mapping_chunk_t)
+			);
+		} else {
+			hook_data->addr_mapping_chunk_pool = last_chunk->next;
+		}
+		last_chunk->len = 0;
+		last_chunk->next = NULL;
+
+		if (hook_data->addr_mappings.first == NULL) {
+			hook_data->addr_mappings.first = last_chunk;
+		} else {
+			hook_data->addr_mappings.last->next = last_chunk;
+		}
+		hook_data->addr_mappings.last = last_chunk;
+	}
+
+	buxn_jit_addr_mapping_t* mapping = &last_chunk->mappings[last_chunk->len++];
+	mapping->mark = buxn_jit_hook_mark_addr(ctx);
+	mapping->addr = pc;
+	hook_data->addr_mappings.len += 1;
 }
 
 static void
@@ -109,6 +165,50 @@ buxn_jit_gdb_end_block(
 		block->debug_info.name.len = label_map->name_len + 1;
 	}
 
+	if (hook_data->addr_mappings.len > 0) {
+		block->debug_info.num_line_mappings = hook_data->addr_mappings.len;
+		buxn_jit_dbg_line_mapping_t* mappings = buxn_jit_alloc(
+			hook_data->config.mem_ctx,
+			sizeof(buxn_jit_dbg_line_mapping_t) * hook_data->addr_mappings.len,
+			_Alignof(buxn_jit_dbg_line_mapping_t)
+		);
+		block->debug_info.mappings = mappings;
+
+		int mapping_index = 0;
+		int index_hint = 0;
+		for (
+			buxn_jit_addr_mapping_chunk_t* itr = hook_data->addr_mappings.first;
+			itr != NULL;
+		) {
+			buxn_jit_addr_mapping_chunk_t* next = itr->next;
+
+			for (int i = 0; i < itr->len; ++i) {
+				const buxn_jit_addr_mapping_t* addr_mapping = &itr->mappings[i];
+				const buxn_dbg_sym_t* sym = buxn_dbg_find_symbol(
+					hook_data->config.symtab,
+					addr_mapping->addr,
+					&index_hint
+				);
+
+				buxn_jit_dbg_line_mapping_t* dbg_mapping = &mappings[mapping_index++];
+				*dbg_mapping = (buxn_jit_dbg_line_mapping_t){
+					.pc = buxn_jit_hook_resolve_addr(ctx, addr_mapping->mark),
+					.line = sym->region.range.start.line,
+					.file = {
+						.len = strlen(sym->region.filename),
+						.str = sym->region.filename,
+					},
+				};
+			}
+
+			itr->next = hook_data->addr_mapping_chunk_pool;
+			hook_data->addr_mapping_chunk_pool = itr;
+			itr = next;
+		}
+		hook_data->addr_mappings.first = hook_data->addr_mappings.last = NULL;
+		hook_data->addr_mappings.len = 0;
+	}
+
 	block->next = hook_data->blocks;
 	hook_data->blocks = block;
 
@@ -148,6 +248,7 @@ buxn_jit_init_gdb_hook(
 	};
 
 	*hook = (buxn_jit_hook_t){
+		.jit_opcode = config->symtab != NULL ? buxn_jit_gdb_jit_opcode : NULL,
 		.end_block = buxn_jit_gdb_end_block,
 		.userdata = hook_data,
 	};
