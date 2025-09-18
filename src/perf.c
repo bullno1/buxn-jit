@@ -219,9 +219,11 @@ buxn_jit_perf_end_block(
 		const buxn_label_map_entry_t* closest_label = buxn_pc_to_label(
 			hook_data->config.label_map, addr
 		);
-		label = closest_label->name;
-		label_len = closest_label->name_len;
-		at_str = closest_label->addr == addr ? "@" : "~";
+		if (closest_label) {
+			label = closest_label->name;
+			label_len = closest_label->name_len;
+			at_str = closest_label->addr == addr ? "@" : "~";
+		}
 	}
 	char name[512];
 	int name_len = snprintf(

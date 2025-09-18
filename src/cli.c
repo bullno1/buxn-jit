@@ -99,7 +99,7 @@ boot(
 	barray(buxn_label_map_entry_t) label_map_entries = NULL;
 	barray(char) str_buf = NULL;
 	char* sym_path = barena_memalign(&arena, strlen(rom_path) + 5, _Alignof(char));
-	snprintf(sym_path, sizeof(rom_path) + 5, "%s.sym", rom_path);
+	snprintf(sym_path, strlen(rom_path) + 5, "%s.sym", rom_path);
 	FILE* sym_file = fopen(sym_path, "rb");
 	if (sym_file != NULL) {
 		while (true) {
@@ -136,7 +136,7 @@ boot(
 
 	// Try reading the debug file
 	char* dbg_path = barena_memalign(&arena, strlen(rom_path) + 5, _Alignof(char));
-	snprintf(dbg_path, sizeof(rom_path) + 5, "%s.dbg", rom_path);
+	snprintf(dbg_path, strlen(rom_path) + 5, "%s.dbg", rom_path);
 	FILE* dbg_file = fopen(dbg_path, "rb");
 	buxn_dbg_symtab_t* symtab = NULL;
 	if (dbg_file != NULL) {
