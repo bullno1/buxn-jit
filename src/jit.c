@@ -169,6 +169,7 @@ typedef struct {
 	struct sljit_compiler* compiler;
 	struct sljit_label* head_label;
 	struct sljit_label* body_label;
+	struct sljit_label* call_fallback;
 	uint16_t entry_pc;
 	uint16_t pc;
 	uint8_t current_opcode;
@@ -1260,6 +1261,7 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 				SLJIT_CALL_REG_ARG | SLJIT_REWRITABLE_JUMP,
 				SLJIT_ARGS0(32)
 			);
+			sljit_set_label(call, ctx->call_fallback);
 #if BUXN_JIT_VERBOSE
 			int call_id = ctx->label_id++;
 			fprintf(stderr, "  ; jump => label%d\n", call_id);
@@ -1278,20 +1280,9 @@ buxn_jit_jump_abs(buxn_jit_ctx_t* ctx, buxn_jit_operand_t target, uint16_t retur
 #endif
 			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_R0, 0);
 
-			// Fallback stub in case we can't call for whatever reason
 #if BUXN_JIT_VERBOSE
 			fprintf(stderr, "  ; label%d:\n", call_id);
 #endif
-			sljit_set_label(call, sljit_emit_label(ctx->compiler));
-			sljit_emit_enter(
-				ctx->compiler,
-				SLJIT_ENTER_KEEP(BUXN_JIT_S_COUNT) | SLJIT_ENTER_REG_ARG,
-				SLJIT_ARGS0(32),
-				BUXN_JIT_R_COUNT,
-				BUXN_JIT_S_COUNT,
-				0
-			);
-			sljit_emit_return(ctx->compiler, SLJIT_MOV32, SLJIT_IMM, target.const_value);
 
 #if BUXN_JIT_VERBOSE
 			fprintf(stderr, "  ; label%d:\n", skip_id);
@@ -2424,6 +2415,19 @@ buxn_jit_compile(buxn_jit_t* jit, const buxn_jit_entry_t* entry) {
 
 	buxn_jit_save_state(&ctx);
 	sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_R0, 0);
+
+	// Fallback call stub for JSR/JSI in case we can't call for whatever reason
+	ctx.call_fallback = sljit_emit_label(ctx.compiler);
+	sljit_emit_enter(
+		ctx.compiler,
+		SLJIT_ENTER_KEEP(BUXN_JIT_S_COUNT) | SLJIT_ENTER_REG_ARG,
+		SLJIT_ARGS0(32),
+		BUXN_JIT_R_COUNT,
+		BUXN_JIT_S_COUNT,
+		0
+	);
+	// Break because something's wrong
+	sljit_emit_return(ctx.compiler, SLJIT_MOV32, SLJIT_IMM, 0x10000);
 
 #if BUXN_JIT_VERBOSE
 	fprintf(stderr, "  ; }}}\n");
