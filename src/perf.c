@@ -246,7 +246,7 @@ buxn_jit_perf_end_block(
 		if (hook_data->addr_mappings.len > 0) {
 			perf_jitdump_debug_info_t debug_info = {
 				.code_addr = code_start,
-				.nr_entry = hook_data->addr_mappings.len,
+				.nr_entry = hook_data->addr_mappings.len + 1,
 			};
 			perf_jitdump_rec_hdr_t hdr = {
 				.id = JIT_CODE_DEBUG_INFO,
@@ -255,6 +255,11 @@ buxn_jit_perf_end_block(
 					+ sizeof(hdr)
 					+ sizeof(debug_info)
 			};
+
+			// It seems all the online code adds a dummy empty line
+			// Example: https://github.com/M-I/otp/blob/447964ca99647c60d1e7802acc6fd214c06eef2d/erts/emulator/beam/jit/beam_jit_metadata.cpp#L417
+			hdr.total_size += sizeof(perf_jitdump_debug_entry_t);
+			hdr.total_size += 1;
 
 			int index_hint = 0;
 			for (
@@ -294,7 +299,7 @@ buxn_jit_perf_end_block(
 					perf_jitdump_debug_entry_t entry = {
 						.code_addr = buxn_jit_hook_resolve_addr(ctx, mapping->mark),
 						.line = sym->region.range.start.line,
-						.discrim = sym->region.range.start.col - 1,
+						.discrim = sym->region.range.start.col,
 					};
 					fwrite(&entry, sizeof(entry), 1, hook_data->dump_file);
 					const char* filename = sym->region.filename;
@@ -307,6 +312,15 @@ buxn_jit_perf_end_block(
 			}
 			hook_data->addr_mappings.first = hook_data->addr_mappings.last = NULL;
 			hook_data->addr_mappings.len = 0;
+
+			// Dummy line
+			perf_jitdump_debug_entry_t dummy_entry = {
+				.code_addr = code_start + code_size - 1,
+				.line = 0,
+				.discrim = 0,
+			};
+			fwrite(&dummy_entry, sizeof(dummy_entry), 1, hook_data->dump_file);
+			fwrite("", 1, 1, hook_data->dump_file);
 		}
 
 		// Code load record
