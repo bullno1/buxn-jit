@@ -24,6 +24,9 @@ The [cli.c](src/cli.c) is an examplle of a terminal uxn emulator with JIT and ho
 
 ## perf hook
 
+![perf1](doc/perf1.webp)
+![perf2](doc/perf2.png)
+
 [jit/perf.h](include/buxn/jit/perf.h)
 
 This hook allows JIT'ed code to be profiled with `perf`:
@@ -40,10 +43,9 @@ perf report -Mintel -g -i perf.jit.data
 The ROM must be compiled using [buxn-asm](https://github.com/bullno1/buxn/blob/master/doc/asm.md).
 The `.rom.sym` and `.rom.dbg` files need to be in the same directory as the ROM.
 
-![perf1](doc/perf1.webp)
-![perf2](doc/perf2.png)
-
 ## gdb hook
+
+![gdb](doc/gdb.webp)
 
 [jit/gdb.h](include/buxn/jit/gdb.h)
 
@@ -64,8 +66,6 @@ run
 # Display backtrace
 bt
 ```
-
-![gdb](doc/gdb.webp)
 
 The ROM must be compiled using [buxn-asm](https://github.com/bullno1/buxn/blob/master/doc/asm.md).
 The `.rom.sym` and `.rom.dbg` files need to be in the same directory as the ROM.
