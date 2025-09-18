@@ -1,0 +1,71 @@
+name: Build
+run-name: Build
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+on:
+  - push
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Install MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+          sdk: 10.0.22621.0
+          vsversion: 2022
+      - name: Generate project
+        run: .\msvc.bat
+      - name: Build
+        run: |
+          cd msvc
+          msbuild buxn-ls.sln /property:Configuration=RelWithDebInfo /property:Platform=x64
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        uses: daaku/gh-action-apt-install@v4
+        with:
+          packages: gdb
+      - name: Set up Clang
+        uses: egor-tensin/setup-clang@v1
+        with:
+          version: latest
+      - name: Setup mold
+        uses: rui314/setup-mold@v1
+        with:
+          mold-version: 2.37.1
+      - name: Build
+        run: BUILD_TYPE=RelWithDebInfo ./build
+      - name: Test
+        env:
+          BUILD_TYPE: RelWithDebInfo
+        run: |
+          ./test
+  build-freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build in FreeBSD
+        id: test
+        uses: vmactions/freebsd-vm@v1.2.3
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y cmake mold ninja llvm20 gdb
+          run: |
+            export PATH=/usr/local/llvm20/bin:$PATH
+            BUILD_TYPE=RelWithDebInfo ./build
+            BUILD_TYPE=RelWithDebInfo ./test
