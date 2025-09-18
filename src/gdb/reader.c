@@ -1,4 +1,4 @@
-#include <gdb/jit-reader.h>
+#include "jit-reader.h"
 #include <string.h>
 #include <stdlib.h>
 #include <barray.h>

@@ -32,10 +32,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install dependencies
-        uses: daaku/gh-action-apt-install@v4
-        with:
-          packages: gdb
       - name: Set up Clang
         uses: egor-tensin/setup-clang@v1
         with:
@@ -64,7 +60,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg install -y cmake mold ninja llvm20 gdb
+            pkg install -y cmake mold ninja llvm20
           run: |
             export PATH=/usr/local/llvm20/bin:$PATH
             BUILD_TYPE=RelWithDebInfo ./build
