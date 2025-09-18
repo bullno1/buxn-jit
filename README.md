@@ -41,7 +41,7 @@ The ROM must be compiled using [buxn-asm](https://github.com/bullno1/buxn/blob/m
 The `.rom.sym` and `.rom.dbg` files need to be in the same directory as the ROM.
 
 ![perf1](doc/perf1.webp)
-![perf2](doc/perf2.webp)
+![perf2](doc/perf2.png)
 
 ## gdb hook
 
