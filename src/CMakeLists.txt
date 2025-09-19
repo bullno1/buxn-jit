@@ -2,16 +2,18 @@ add_library(buxn-jit STATIC "jit.c")
 target_include_directories(buxn-jit PUBLIC "../include")
 target_link_libraries(buxn-jit PRIVATE buxn sljit)
 
-add_library(buxn-jit-gdb-hook STATIC "gdb/hook.c")
-target_include_directories(buxn-jit-gdb-hook PUBLIC "../include")
-target_link_libraries(buxn-jit-gdb-hook PRIVATE buxn)
-# When using mold linker with `--separate-debug-file`, gdb will not be able to
-# locate debug symbol for this global variable even with visibility("default")
-# However, if the symbol is exported, it will be able to.
-target_link_options(
-	buxn-jit-gdb-hook PUBLIC
-	-Wl,--export-dynamic-symbol=__jit_debug_register_code
-)
+if (LINUX OR BSD)
+	add_library(buxn-jit-gdb-hook STATIC "gdb/hook.c")
+	target_include_directories(buxn-jit-gdb-hook PUBLIC "../include")
+	target_link_libraries(buxn-jit-gdb-hook PRIVATE buxn)
+	# When using mold linker with `--separate-debug-file`, gdb will not be able to
+	# locate debug symbol for this global variable even with visibility("default")
+	# However, if the symbol is exported, it will be able to.
+	target_link_options(
+		buxn-jit-gdb-hook PUBLIC
+		-Wl,--export-dynamic-symbol=__jit_debug_register_code
+	)
+endif ()
 
 if (LINUX)
 	add_library(buxn-jit-perf-hook STATIC "perf.c")
@@ -39,5 +41,5 @@ if (LINUX)
 elseif (BSD)
 	target_link_libraries(buxn-jit-cli PRIVATE buxn-jit-gdb-hook stdthreads)
 elseif (WIN32)
-	set_property(TARGET buxn-ls PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	set_property(TARGET buxn-jit-cli PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif ()

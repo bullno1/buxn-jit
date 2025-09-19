@@ -81,7 +81,7 @@ buxn_asm_str_len(
 	basm.vfs = (buxn_vfs_entry_t[]) {
 		{
 			.name = filename,
-			.content = { .data = (const unsigned char*)str, .size = len }
+			.content = { .data = (const unsigned char*)str, .size = (unsigned int)len }
 		},
 		{ 0 },
 	};

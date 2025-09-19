@@ -138,7 +138,7 @@ boot(
 		fclose(sym_file);
 	}
 	buxn_label_map_t label_map = {
-		.size = barray_len(label_map_entries),
+		.size = (uint16_t)barray_len(label_map_entries),
 		.entries = label_map_entries,
 	};
 

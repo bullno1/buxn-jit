@@ -13,13 +13,15 @@ if (IPO_SUPPORTED AND (NOT RELOADABLE))
 	set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
 endif ()
 
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS OFF)
+
 # Add deps first
 add_subdirectory(deps)
 
 # Then everything else to avoid leaking into deps
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_EXTENSIONS OFF)
 
 if (MSVC)
 	add_compile_options(/W3 /WX)
