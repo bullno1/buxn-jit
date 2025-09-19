@@ -17,6 +17,14 @@
 #define BSERIAL_STDIO
 #include <bserial.h>
 
+#if defined(__linux__) || defined(__FreeBSD__)
+#	define BUXN_CLI_WITH_GDB_HOOK 1
+#endif
+
+#if defined(__linux__)
+#	define BUXN_CLI_WITH_PERF_HOOK 1
+#endif
+
 typedef struct {
 	buxn_console_t console;
 	buxn_jit_t* jit;
@@ -162,21 +170,32 @@ end_read:
 		fclose(dbg_file);
 	}
 
-	buxn_jit_hook_t jit_hook, gdb_hook, perf_hook;
-
+#if BUXN_CLI_WITH_GDB_HOOK
+	buxn_jit_hook_t gdb_hook;
 	buxn_jit_init_gdb_hook(&gdb_hook, &(buxn_jit_gdb_hook_config_t){
 		.mem_ctx = &arena,
 		.label_map = &label_map,
 		.symtab = symtab,
 	});
+#endif
+
+#if BUXN_CLI_WITH_PERF_HOOK
+	buxn_jit_hook_t perf_hook;
 	buxn_jit_init_perf_hook(&perf_hook, &(buxn_jit_perf_hook_config_t){
 		.mem_ctx = &arena,
 		.label_map = &label_map,
 		.symtab = symtab,
 	});
+#endif
+
+	buxn_jit_hook_t jit_hook;
 	buxn_jit_init_composite_hook(&jit_hook, (buxn_jit_hook_t*[]){
+#if BUXN_CLI_WITH_GDB_HOOK
 		&gdb_hook,
+#endif
+#if BUXN_CLI_WITH_PERF_HOOK
 		&perf_hook,
+#endif
 		NULL,
 	});
 
@@ -234,8 +253,12 @@ end:
 	barray_free(NULL, label_map_entries);
 
 	buxn_jit_cleanup(jit);
+#if BUXN_CLI_WITH_PERF_HOOK
 	buxn_jit_cleanup_perf_hook(&perf_hook);
+#endif
+#if BUXN_CLI_WITH_GDB_HOOK
 	buxn_jit_cleanup_gdb_hook(&gdb_hook);
+#endif
 	barena_reset(&arena);
 	barena_pool_cleanup(&pool);
 

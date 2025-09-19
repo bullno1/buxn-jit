@@ -4,6 +4,7 @@
 #include "label_map.h"
 
 struct buxn_jit_hook_s;
+struct buxn_dbg_symtab_s;
 
 typedef struct {
 	void* mem_ctx;

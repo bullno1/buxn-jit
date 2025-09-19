@@ -63,5 +63,6 @@ jobs:
             pkg install -y cmake mold ninja llvm20
           run: |
             export PATH=/usr/local/llvm20/bin:$PATH
-            BUILD_TYPE=RelWithDebInfo ./build
-            BUILD_TYPE=RelWithDebInfo ./test
+            export BUILD_TYPE=RelWithDebInfo
+            ./build
+            sh ./test
